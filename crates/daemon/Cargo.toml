@@ -1,0 +1,20 @@
+[package]
+name = "penguinsync-daemon"
+description = "PenguinSync background daemon for Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "penguinsyncd"
+path = "src/main.rs"
+
+[dependencies]
+penguinsync-net = { workspace = true }
+
+# Intended dependencies:
+# zbus     — D-Bus: serves org.penguinsync.Daemon1 (ObjectManager, one object
+#            per paired device); client of Avahi and of the GNOME Shell extension
+# tracing-journald

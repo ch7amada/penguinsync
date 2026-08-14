@@ -1,0 +1,22 @@
+[package]
+name = "penguinsync-cli"
+description = "PenguinSync terminal UI and command-line client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "penguinsync"
+path = "src/main.rs"
+
+[dependencies]
+
+# Intended dependencies:
+# zbus    — client of org.penguinsync.Daemon1
+# ratatui — TUI
+# clap    — CLI verbs
+#
+# Note: this crate talks to the daemon over D-Bus only. It does not depend on
+# penguinsync-net — the protocol runs in the daemon, not in the client.

@@ -1,0 +1,15 @@
+# Pinned exactly, not tracked to `stable`.
+#
+# F-Droid builds from source and compares against the published APK; build
+# outputs must be byte-identical, which means the compiler version is part of
+# the build inputs. See docs/reproducible-builds.md — the F-Droid recipe must
+# install this same version.
+#
+# Note: rustup treats "1.96.0" as a distinct toolchain from "stable" even when
+# stable *is* 1.96.0, so the first cargo invocation may download it.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+
+# Android targets are added here when the Android build lands with M0:
+#   targets = ["aarch64-linux-android", "armv7-linux-androideabi"]

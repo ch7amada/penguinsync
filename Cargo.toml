@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/protocol",
+    "crates/net",
+    "crates/ffi",
+    "crates/daemon",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "GPL-3.0-or-later"
+authors = ["ch7amada <ch7amada@proton.me>"]
+
+[workspace.dependencies]
+penguinsync-protocol = { path = "crates/protocol" }
+penguinsync-net = { path = "crates/net" }
+
+# Crypto backend: `ring`, NOT the `aws-lc-rs` default.
+#
+# `aws-lc-rs` fails to cross-compile for `aarch64-linux-android`
+# (https://github.com/aws/aws-lc-rs/issues/918), and its CMake/NASM-heavy build
+# would complicate F-Droid reproducible builds. Both platforms share one crypto
+# implementation. Do not "clean up" the `default-features = false`.
+#
+# rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# Android builds only. Rust panics surface on Android as unattributable native
+# crashes; see docs/design.md §8 for the breadcrumb-logging discipline.
+[profile.release-android]
+inherits = "release"
+panic = "abort"

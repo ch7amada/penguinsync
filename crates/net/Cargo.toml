@@ -1,0 +1,19 @@
+[package]
+name = "penguinsync-net"
+description = "Networking and platform I/O for PenguinSync: QUIC transport, TLS identity, discovery, file I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+penguinsync-protocol = { workspace = true }
+
+# Intended dependencies (added as milestones land — see docs/design.md §9):
+# tokio    — async runtime
+# quinn    — QUIC; a single Endpoint both accepts and initiates
+# rustls   — with `ring`, custom ServerCertVerifier doing SPKI pinning
+# rcgen    — self-signed Ed25519 device certificates
+# blake3   — file transfer integrity
+# tracing  — instrumentation (journald on Linux, Logcat on Android)

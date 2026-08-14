@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/target/
+
+# Android
+/android/.gradle/
+/android/build/
+/android/**/build/
+/android/local.properties
+/android/.cxx/
+*.apk
+*.aab
+*.keystore
+# Rust artifacts copied in by the cargo-ndk build step
+/android/core/src/main/jniLibs/
+
+# Python (Nautilus extension)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json

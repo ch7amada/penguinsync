@@ -1,0 +1,35 @@
+name: rust
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain version comes from rust-toolchain.toml — pinned exactly,
+      # so CI and F-Droid build with the same compiler (docs/reproducible-builds.md).
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Clippy as an error from commit one: the cheapest Rust teacher available.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace
+
+# An Android job (assembleDebug + unit tests) is added when the Gradle project
+# lands with M0. Release automation waits until there is a release.

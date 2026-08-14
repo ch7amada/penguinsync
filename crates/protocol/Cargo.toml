@@ -1,0 +1,20 @@
+[package]
+name = "penguinsync-protocol"
+description = "Sans-I/O protocol core for PenguinSync: message types and state machines, no networking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# INVARIANT: this crate performs no I/O and has no async runtime.
+#
+# It takes events in and returns actions out. Nothing here may depend on tokio,
+# quinn, rustls, std::net, or the filesystem. That property is what makes
+# pairing, reconnect, echo suppression and transfer state unit-testable without
+# a socket, an emulator, or a phone (docs/design.md §4.2, §8).
+#
+# Permitted dependencies are limited to pure data/serialization crates:
+[dependencies]
+# serde = { version = "1", features = ["derive"] }
+# postcard = { version = "1", features = ["alloc"] }
