@@ -13,6 +13,21 @@
          runtime from MainActivity, best-effort — the QS tile and in-app
          button still work without it. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Foreground service, type connectedDevice (docs/design.md §4.6):
+         confirmed live that a backgrounded app with no foreground service
+         gets its connection dropped even though the process survives.
+         FOREGROUND_SERVICE_CONNECTED_DEVICE is API 34+; CHANGE_WIFI_STATE
+         and CHANGE_WIFI_MULTICAST_STATE are both normal (no runtime prompt)
+         and the latter is the design doc's documented co-requirement for
+         this exact foreground service type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Required by WifiManager.WifiLock.acquire() itself, separately from
+         CHANGE_WIFI_STATE — missing this throws a SecurityException at
+         acquire() time, not at declare time. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".PenguinSyncApp"
@@ -60,5 +75,17 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!-- Keeps the process (and therefore the QUIC connection's
+             keepalive/reconnect loop, entirely inside Rust) alive and
+             un-frozen in the background — the fix for the disconnect/
+             reconnect churn observed live the moment the app left the
+             foreground. Started once alongside the first successful
+             `pair()` call (docs/design.md §4.6); never `dataSync`, which
+             Android 15+ caps at 6h/24h and kills. -->
+        <service
+            android:name=".PenguinSyncConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

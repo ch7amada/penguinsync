@@ -3,15 +3,13 @@ package org.penguinsync.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import uniffi.penguinsync.ConnectionHandle
 import uniffi.penguinsync.CoreEvent
 import uniffi.penguinsync.CoreEventListener
@@ -39,11 +37,14 @@ sealed class SendResult {
 /// is therefore held here, not by an Activity, and is no longer cancelled
 /// on any Activity's `onDestroy()`.
 ///
-/// There is still no foreground service — that's separate, later work
-/// (docs/design.md §4.6). If Android kills the process outright, the
-/// connection dies with it, the same as before M2; this only buys survival
-/// across an Activity being destroyed and recreated, or the user leaving
-/// the app on screen.
+/// [PenguinSyncConnectionService] is started alongside the first successful
+/// `pair()` call and owns keeping the process itself alive in the
+/// background — confirmed live (docs/design.md §4.6): without it, a merely
+/// backgrounded app (process still running, not killed) still got its
+/// connection dropped and reconnected repeatedly, because a
+/// foreground-service-less background process is a target for Android's
+/// cached-process freezer. That service also owns the connected-device
+/// notification now, since a foreground service must have one anyway.
 class PenguinSyncApp : Application() {
     lateinit var core: PenguinSyncCore
         private set
@@ -59,6 +60,12 @@ class PenguinSyncApp : Application() {
     /// notification triggers.
     var uiListener: ((String) -> Unit)? = null
 
+    /// Set by [PenguinSyncConnectionService] while it's alive, so it can
+    /// keep its foreground notification current. Same "must work `null`"
+    /// rule as [uiListener], though in practice the service is expected to
+    /// outlive any single event once a connection exists.
+    var serviceListener: ((CoreEvent) -> Unit)? = null
+
     override fun onCreate() {
         super.onCreate()
         core = PenguinSyncCore(filesDir.absolutePath, Build.MODEL ?: "Android")
@@ -68,7 +75,9 @@ class PenguinSyncApp : Application() {
     /// Starts (or restarts) pairing. Cancelling whatever the previous
     /// attempt left running matches the FFI cancellation discipline
     /// (docs/design.md §4.2) — a second pairing attempt replaces the first,
-    /// it doesn't run alongside it.
+    /// it doesn't run alongside it. Also starts the foreground service —
+    /// safe to call every time, a second `startForegroundService` on an
+    /// already-running service is a no-op beyond redelivering `onStartCommand`.
     fun startPairing(qrUri: String): Result<Unit> =
         runCatching {
             connectionHandle?.cancel()
@@ -79,6 +88,10 @@ class PenguinSyncApp : Application() {
                         override fun onEvent(event: CoreEvent) = handleCoreEvent(event)
                     },
                 )
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, PenguinSyncConnectionService::class.java),
+            )
         }
 
     /// M2's entire send path, from the clipboard side: called only once
@@ -117,15 +130,11 @@ class PenguinSyncApp : Application() {
     }
 
     private fun handleCoreEvent(event: CoreEvent) {
-        when (event) {
-            // Writing is unrestricted from anywhere, foreground or not
-            // (docs/design.md §3.1) — M1's write path, unchanged by M2.
-            is CoreEvent.ClipboardReceived -> writeToClipboard(event.text)
-            is CoreEvent.PeerHandshake -> showConnectedNotification(event.name)
-            is CoreEvent.Disconnected -> cancelConnectedNotification()
-            else -> {}
-        }
+        // Writing is unrestricted from anywhere, foreground or not
+        // (docs/design.md §3.1) — M1's write path, unchanged by M2.
+        if (event is CoreEvent.ClipboardReceived) writeToClipboard(event.text)
         uiListener?.invoke(describe(event))
+        serviceListener?.invoke(event)
     }
 
     private fun writeToClipboard(text: String) {
@@ -140,50 +149,9 @@ class PenguinSyncApp : Application() {
                 "PenguinSync connection",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Shows the connected device and a manual clipboard-send action"
+                description = "Shows the connection status and a manual clipboard-send action"
             }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-    }
-
-    /// The notification IS the M2 trigger (docs/design.md §6.1's Baseline
-    /// row): an ongoing, low-priority notification with one action, "Send
-    /// clipboard", that launches [ClipboardReadActivity]. Silently does
-    /// nothing if POST_NOTIFICATIONS was never granted (or was revoked) —
-    /// the QS tile and in-app button still work either way.
-    private fun showConnectedNotification(deviceName: String) {
-        val manager = NotificationManagerCompat.from(this)
-        if (!manager.areNotificationsEnabled()) return
-
-        val sendIntent = Intent(this, ClipboardReadActivity::class.java)
-        val sendPendingIntent =
-            PendingIntent.getActivity(
-                this,
-                0,
-                sendIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-
-        val notification =
-            NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_penguinsync_clipboard)
-                .setContentTitle("Connected to $deviceName")
-                .setContentText("Tap to send this phone's clipboard")
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .addAction(0, "Send clipboard", sendPendingIntent)
-                .build()
-
-        try {
-            manager.notify(CONNECTED_NOTIFICATION_ID, notification)
-        } catch (e: SecurityException) {
-            // POST_NOTIFICATIONS revoked between the check above and here —
-            // a narrow but real race. Not worth crashing the connection
-            // path over a notification.
-        }
-    }
-
-    private fun cancelConnectedNotification() {
-        NotificationManagerCompat.from(this).cancel(CONNECTED_NOTIFICATION_ID)
     }
 
     private fun describe(event: CoreEvent): String =
@@ -196,7 +164,8 @@ class PenguinSyncApp : Application() {
         }
 
     companion object {
-        private const val CHANNEL_ID = "penguinsync-connection"
-        private const val CONNECTED_NOTIFICATION_ID = 1
+        /// Shared with [PenguinSyncConnectionService], which owns the actual
+        /// notification built on this channel.
+        const val CHANNEL_ID = "penguinsync-connection"
     }
 }
