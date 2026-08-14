@@ -8,8 +8,29 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- M2's notification-action trigger needs this to post anything at all
+         on API 33+ (docs/design.md §6.1's Baseline tier); requested at
+         runtime from MainActivity, best-effort — the QS tile and in-app
+         button still work without it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Foreground service, type connectedDevice (docs/design.md §4.6):
+         confirmed live that a backgrounded app with no foreground service
+         gets its connection dropped even though the process survives.
+         FOREGROUND_SERVICE_CONNECTED_DEVICE is API 34+; CHANGE_WIFI_STATE
+         and CHANGE_WIFI_MULTICAST_STATE are both normal (no runtime prompt)
+         and the latter is the design doc's documented co-requirement for
+         this exact foreground service type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Required by WifiManager.WifiLock.acquire() itself, separately from
+         CHANGE_WIFI_STATE — missing this throws a SecurityException at
+         acquire() time, not at declare time. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:name=".PenguinSyncApp"
         android:allowBackup="false"
         android:label="PenguinSync"
         android:supportsRtl="true">
@@ -23,5 +44,48 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Transparent trampoline for M2's manual clipboard-send path
+             (docs/design.md §6.1, §9): the QS tile and the notification
+             action both launch this instead of reading the clipboard
+             themselves, since neither has window focus (§3.1) —
+             `ClipboardReadActivity` waits for `onWindowFocusChanged(true)`,
+             then reads, sends, and finishes with no visible frame. Only our
+             own PendingIntents launch it. -->
+        <activity
+            android:name=".ClipboardReadActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- QS tile for the same manual send path. `exported="true"` +
+             `BIND_QUICK_SETTINGS_TILE` is the documented shape for a tile
+             service — System UI must be able to bind it before the app has
+             ever run in the foreground; the permission restricts binding to
+             the system itself. -->
+        <service
+            android:name=".PenguinSyncTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_penguinsync_clipboard"
+            android:label="Send clipboard"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Keeps the process (and therefore the QUIC connection's
+             keepalive/reconnect loop, entirely inside Rust) alive and
+             un-frozen in the background — the fix for the disconnect/
+             reconnect churn observed live the moment the app left the
+             foreground. Started once alongside the first successful
+             `pair()` call (docs/design.md §4.6); never `dataSync`, which
+             Android 15+ caps at 6h/24h and kills. -->
+        <service
+            android:name=".PenguinSyncConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

@@ -60,10 +60,19 @@ async fn handle_session_event(
         SessionEvent::Ponged { rtt } => {
             tracing::debug!(?remote, ?rtt, "ping round trip");
         }
-        SessionEvent::ClipboardReceived(_) => {
-            // Android -> Linux clipboard write lands in M2 (docs/design.md
-            // §9's roadmap); nothing on the Linux side accepts this yet.
-            tracing::debug!(?remote, "clipboard message received but not yet handled");
+        SessionEvent::ClipboardReceived(clip) => {
+            let sender = shared.remote_to_device.lock().await.get(&remote).copied();
+            match sender {
+                Some(sender) => crate::clipboard::handle_received(shared, sender, clip).await,
+                // Shouldn't happen — the control stream only carries
+                // Clipboard once a session is Ready, which is after the
+                // handshake that populates this map — but a stray message
+                // is dropped rather than panicking on the unwrap.
+                None => tracing::warn!(
+                    ?remote,
+                    "clipboard message received before handshake; dropping"
+                ),
+            }
         }
         SessionEvent::Closed(reason) => {
             shared.remote_handles.lock().await.remove(&remote);

@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use penguinsync_net::reconnect::DialerEvent;
-use penguinsync_net::session::{CloseReason, SessionEvent};
+use penguinsync_net::session::{CloseReason, SessionEvent, SessionHandle};
 use penguinsync_net::{Endpoint, Identity, TrustStore};
+use penguinsync_protocol::clipboard::{Clip, MIME_TEXT_PLAIN};
 use penguinsync_protocol::pairing::decode_qr_uri;
 use penguinsync_protocol::{LocalIdentity, PROTOCOL_VERSION, message};
 
@@ -34,6 +35,10 @@ pub enum CoreError {
     InvalidQr(String),
     #[error("network setup failed: {0}")]
     Network(String),
+    #[error("clipboard content rejected: {0}")]
+    InvalidClipboard(String),
+    #[error("no device currently connected")]
+    NotConnected,
 }
 
 #[derive(uniffi::Enum, Debug, Clone)]
@@ -83,6 +88,12 @@ pub struct PenguinSyncCore {
     device_name: String,
     trust: Arc<TrustStore>,
     peers_path: PathBuf,
+    /// The current session's send handle, if any (M2, docs/design.md §6.1's
+    /// Baseline tier). Plain `std::sync::Mutex`, not `tokio::sync::Mutex` —
+    /// [`PenguinSyncCore::send_clipboard`] is called directly from Kotlin,
+    /// outside any tokio context, and only ever holds this lock long enough
+    /// to clone or replace the handle, never across an `.await`.
+    active_session: Arc<std::sync::Mutex<Option<SessionHandle>>>,
 }
 
 #[uniffi::export]
@@ -109,6 +120,7 @@ impl PenguinSyncCore {
             device_name,
             trust,
             peers_path,
+            active_session: Arc::new(std::sync::Mutex::new(None)),
         }))
     }
 
@@ -178,25 +190,64 @@ impl PenguinSyncCore {
             self.peers_path.clone(),
             payload.device_id,
             payload.name,
+            self.active_session.clone(),
         ));
 
         Ok(Arc::new(ConnectionHandle { dial_task }))
+    }
+
+    /// Pushes this device's clipboard to Linux — the manual read tier
+    /// (docs/design.md §6.1's Baseline row): Kotlin does the actual system
+    /// clipboard read (it needs window focus, §3.1) and hands the resulting
+    /// text here. Errs rather than silently dropping when nothing is
+    /// connected, so the UI can tell the user the tap did nothing.
+    pub fn send_clipboard(&self, text: String) -> Result<(), CoreError> {
+        let clip = Clip::new(MIME_TEXT_PLAIN, text.into_bytes())
+            .map_err(|e| CoreError::InvalidClipboard(e.to_string()))?;
+        let handle = self
+            .active_session
+            .lock()
+            .expect("active_session mutex poisoned")
+            .clone();
+        match handle {
+            Some(handle) => {
+                handle.send_clipboard(clip);
+                Ok(())
+            }
+            None => Err(CoreError::NotConnected),
+        }
     }
 }
 
 /// Forwards every network event to Kotlin, and persists the pin on the
 /// first successful handshake — mirroring the daemon's "confirm, then
 /// persist" step, but here the confirmation already happened when the human
-/// scanned the QR.
+/// scanned the QR. Also keeps `active_session` current, so
+/// [`PenguinSyncCore::send_clipboard`] always has (or knows it lacks) a live
+/// handle, independent of whatever Kotlin is doing with events.
 async fn forward_events(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<DialerEvent>,
     listener: Arc<dyn CoreEventListener>,
     peers_path: PathBuf,
     device_id: penguinsync_protocol::DeviceId,
     name: String,
+    active_session: Arc<std::sync::Mutex<Option<SessionHandle>>>,
 ) {
     let mut persisted = false;
     while let Some(event) = rx.recv().await {
+        match &event {
+            DialerEvent::Connected(handle) => {
+                *active_session
+                    .lock()
+                    .expect("active_session mutex poisoned") = Some(handle.clone());
+            }
+            DialerEvent::Session(SessionEvent::Closed(_)) => {
+                *active_session
+                    .lock()
+                    .expect("active_session mutex poisoned") = None;
+            }
+            _ => {}
+        }
         if !persisted
             && matches!(
                 event,
