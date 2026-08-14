@@ -1,8 +1,19 @@
 # Android app
 
-**Not yet created.** Lands with M0.
+**M0 walking skeleton: built, installed, and paired on a real device.** Kotlin + Jetpack Compose. Owns the UI and the platform glue the Rust core cannot reach; everything else lives in `crates/`.
 
-Kotlin + Jetpack Compose. Owns the UI and the platform glue the Rust core cannot reach; everything else lives in `crates/`.
+M0's screen is deliberately just a QR-URI paste field and an event log — enough to prove pairing, QUIC, the FFI boundary, and reconnect end to end without any camera/NsdManager/foreground-service work. Verified live: paired a Samsung SM-S937B (Android 16) with `penguinsyncd` running on this machine over real Wi-Fi, watched real ping/pong round trips, killed the daemon and watched the app detect the drop and back off, then restarted the daemon and watched it reconnect with no re-pairing.
+
+## Building
+
+```
+cd android
+./gradlew :app:assembleDebug
+```
+
+`:core`'s build does the Gradle glue itself — `cargo-ndk` cross-compiles `crates/ffi`, then `uniffi-bindgen` generates the Kotlin from the resulting `.so`'s embedded metadata (see `android/core/build.gradle.kts`). Needs `cargo-ndk` and the Android NDK (both already required by `rust-toolchain.toml`/the SDK install), and a JDK with `javac` — Fedora's `java-25-openjdk` package here is headless-only; point Gradle at a full JDK via `org.gradle.java.home` in `~/.gradle/gradle.properties` (machine-specific, not committed) if `assembleDebug` fails with a missing `JAVA_COMPILER` capability.
+
+Note: AGP 9.0+ has Kotlin support built in — do not add the `org.jetbrains.kotlin.android` plugin back, it's now a hard error.
 
 ## Baseline
 
