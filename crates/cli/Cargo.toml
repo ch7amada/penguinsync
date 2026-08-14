@@ -12,11 +12,17 @@ name = "penguinsync"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+penguinsync-protocol.workspace = true
+qrcode = { version = "0.14.1", default-features = false }
+ratatui = "0.30.2"
+thiserror = "2"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
-# Intended dependencies:
-# zbus    — client of org.penguinsync.Daemon1
-# ratatui — TUI
-# clap    — CLI verbs
-#
 # Note: this crate talks to the daemon over D-Bus only. It does not depend on
 # penguinsync-net — the protocol runs in the daemon, not in the client.

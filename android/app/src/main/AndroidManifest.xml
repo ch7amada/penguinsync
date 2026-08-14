@@ -1,0 +1,27 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Writing is unrestricted; QUIC needs plain internet access
+         (docs/design.md §3.1, §5.3). ACCESS_LOCAL_NETWORK is mandatory at
+         targetSdk 37 (§3.3) but is a runtime permission requested from the
+         Devices screen, not declared here alone — that flow lands with M1's
+         NsdManager work; M0 dials a candidate address straight from the QR. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <application
+        android:allowBackup="false"
+        android:label="PenguinSync"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

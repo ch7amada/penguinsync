@@ -11,8 +11,10 @@
 *.apk
 *.aab
 *.keystore
-# Rust artifacts copied in by the cargo-ndk build step
+# Rust artifacts copied in by the cargo-ndk build step, and the Kotlin
+# uniffi-bindgen generates from them (docs/design.md §4.2)
 /android/core/src/main/jniLibs/
+/android/core/src/main/kotlin/
 
 # Python (Nautilus extension)
 __pycache__/

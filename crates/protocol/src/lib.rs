@@ -12,6 +12,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backoff;
+pub mod connection;
+pub mod message;
+pub mod pairing;
+
+pub use connection::{Action, ConnectionMachine, Event, LocalIdentity, RejectReason};
+pub use message::{Capability, DeviceId, Handshake, Message, Ping, Pong};
+pub use pairing::{PairingToken, QrPayload};
+
 /// Wire protocol version, advertised in the mDNS TXT record and re-checked
 /// during the handshake.
 ///

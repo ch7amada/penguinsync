@@ -10,10 +10,16 @@ authors.workspace = true
 [dependencies]
 penguinsync-protocol = { workspace = true }
 
-# Intended dependencies (added as milestones land — see docs/design.md §9):
-# tokio    — async runtime
-# quinn    — QUIC; a single Endpoint both accepts and initiates
-# rustls   — with `ring`, custom ServerCertVerifier doing SPKI pinning
-# rcgen    — self-signed Ed25519 device certificates
-# blake3   — file transfer integrity
-# tracing  — instrumentation (journald on Linux, Logcat on Android)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "io-util"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"] }
+sha2 = "0.10"
+blake3 = "1"
+rand = "0.8"
+tracing = "0.1"
+thiserror = "2"
+
+# Intended, not yet added:
+# zbus (Avahi client over D-Bus) lands with the daemon-side registration work.
