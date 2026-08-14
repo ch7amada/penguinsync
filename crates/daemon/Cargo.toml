@@ -12,7 +12,7 @@ name = "penguinsyncd"
 path = "src/main.rs"
 
 [dependencies]
-penguinsync-net = { workspace = true }
+penguinsync-net.workspace = true
 penguinsync-protocol = { workspace = true }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
@@ -24,7 +24,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-journald = "0.3"
 thiserror = "2"
+tokio-stream = { version = "0.1.19", default-features = false }
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+async-trait = "0.1.92"
 
 # Intended, later milestones:
-# Avahi registration over D-Bus, and a client of the GNOME Shell extension's
-# clipboard D-Bus interface, both land with clipboard (M1).
+# Avahi registration over D-Bus (M1 works without it — the QR carries
+# candidate addresses; discovery-while-present is a nice-to-have).

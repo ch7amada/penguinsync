@@ -3,9 +3,9 @@
 //!
 //! This is the seam between the sans-I/O protocol core and the socket: it
 //! owns the control stream, decodes bytes into [`Message`]s, feeds them to
-//! the machine, and carries out whatever [`Action`]s come back. Nothing about
-//! pairing/clipboard/file semantics lives here — just handshake and
-//! keepalive, which is all M0 needs (docs/design.md §9).
+//! the machine, and carries out whatever [`Action`]s come back. Handshake
+//! and keepalive drive themselves; clipboard is the one thing a caller
+//! pushes in from outside, via [`Session::send_clipboard`].
 
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use penguinsync_protocol::pairing::TokenBytes;
 use penguinsync_protocol::{
-    Action, Capability, ConnectionMachine, DeviceId, Event, LocalIdentity, RejectReason,
+    Action, Capability, Clip, ConnectionMachine, DeviceId, Event, LocalIdentity, RejectReason,
 };
 
 use crate::framing::{FramingError, read_message, write_message};
@@ -38,6 +38,9 @@ pub enum SessionEvent {
     Ponged {
         rtt: Duration,
     },
+    /// The peer sent a clipboard update — broadcast, not targeted
+    /// (docs/design.md §6.1).
+    ClipboardReceived(Clip),
     Closed(CloseReason),
 }
 
@@ -57,11 +60,43 @@ pub enum SessionError {
     Write(#[from] quinn::WriteError),
 }
 
+/// Something a caller wants this session to do, pushed in from outside the
+/// driving task.
+enum SessionCommand {
+    SendClipboard(Clip),
+}
+
+/// A cheap, cloneable capability to talk to a running session from outside
+/// whatever is draining its events — the daemon's clipboard orchestrator, or
+/// the FFI core, holding on to it after the connection was reported so it
+/// can push a clipboard update whenever the system clipboard changes, not
+/// just at the moment the session was accepted.
+#[derive(Clone)]
+pub struct SessionHandle {
+    connection: quinn::Connection,
+    commands: mpsc::UnboundedSender<SessionCommand>,
+}
+
+impl SessionHandle {
+    pub fn send_clipboard(&self, clip: Clip) {
+        let _ = self.commands.send(SessionCommand::SendClipboard(clip));
+    }
+
+    pub fn remote_addr(&self) -> std::net::SocketAddr {
+        self.connection.remote_address()
+    }
+
+    pub fn close(&self) {
+        self.connection.close(0u32.into(), b"");
+    }
+}
+
 /// A running control-stream session. Drop it (or call [`Session::close`]) to
 /// tear down the connection; the driving task exits when the connection does.
 pub struct Session {
     connection: quinn::Connection,
     events: mpsc::UnboundedReceiver<SessionEvent>,
+    commands: mpsc::UnboundedSender<SessionCommand>,
 }
 
 impl Session {
@@ -110,20 +145,22 @@ impl Session {
         send: quinn::SendStream,
         recv: quinn::RecvStream,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let conn_for_task = connection.clone();
+        let machine = ConnectionMachine::new(local, keepalive_interval, pairing_token);
         tokio::spawn(drive(
             conn_for_task,
-            local,
-            keepalive_interval,
-            pairing_token,
+            machine,
             send,
             recv,
-            tx,
+            events_tx,
+            commands_rx,
         ));
         Self {
             connection,
-            events: rx,
+            events: events_rx,
+            commands: commands_tx,
         }
     }
 
@@ -131,6 +168,23 @@ impl Session {
     /// always preceded by a [`SessionEvent::Closed`].
     pub async fn next_event(&mut self) -> Option<SessionEvent> {
         self.events.recv().await
+    }
+
+    /// Queue a clipboard update to send on this session's control stream.
+    /// Fire-and-forget: if the session has already closed, this is a no-op
+    /// — there's no one to tell.
+    pub fn send_clipboard(&self, clip: Clip) {
+        let _ = self.commands.send(SessionCommand::SendClipboard(clip));
+    }
+
+    /// A cheap, cloneable handle a caller can hold on to after this
+    /// `Session` is consumed by [`Session::drain`], to keep pushing
+    /// clipboard updates for as long as the session stays connected.
+    pub fn handle(&self) -> SessionHandle {
+        SessionHandle {
+            connection: self.connection.clone(),
+            commands: self.commands.clone(),
+        }
     }
 
     pub fn remote_addr(&self) -> std::net::SocketAddr {
@@ -161,21 +215,23 @@ impl Session {
 
 async fn drive(
     connection: quinn::Connection,
-    local: LocalIdentity,
-    keepalive_interval: Duration,
-    pairing_token: Option<TokenBytes>,
+    mut machine: ConnectionMachine,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     tx: mpsc::UnboundedSender<SessionEvent>,
+    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) {
-    let mut machine = ConnectionMachine::new(local, keepalive_interval, pairing_token);
-
     if !run_actions(machine.handle(Event::Started, rand::random), &mut send, &tx).await {
         return;
     }
 
     let mut ticker = tokio::time::interval(TICK_PERIOD);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Once the last `Session` handle is dropped, `commands` closes and
+    // `.recv()` starts returning `None` on every poll. Stop polling it
+    // rather than let that branch busy-spin for however long the
+    // connection itself takes to wind down.
+    let mut commands_open = true;
 
     loop {
         tokio::select! {
@@ -200,6 +256,16 @@ async fn drive(
             _ = ticker.tick() => {
                 if !run_actions(machine.handle(Event::Tick(Instant::now()), rand::random), &mut send, &tx).await {
                     return;
+                }
+            }
+            cmd = commands.recv(), if commands_open => {
+                match cmd {
+                    Some(SessionCommand::SendClipboard(clip)) => {
+                        if !run_actions(machine.handle(Event::SendClipboard(clip), rand::random), &mut send, &tx).await {
+                            return;
+                        }
+                    }
+                    None => commands_open = false,
                 }
             }
             reason = connection.closed() => {
@@ -242,6 +308,9 @@ async fn run_actions(
             }
             Action::Ponged { rtt } => {
                 let _ = tx.send(SessionEvent::Ponged { rtt });
+            }
+            Action::PeerClipboard(clip) => {
+                let _ = tx.send(SessionEvent::ClipboardReceived(clip));
             }
             Action::KeepaliveTimedOut => {
                 let _ = tx.send(SessionEvent::Closed(CloseReason::KeepaliveTimedOut));

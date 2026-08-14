@@ -21,11 +21,21 @@ use tokio::sync::mpsc;
 use penguinsync_protocol::LocalIdentity;
 
 use crate::endpoint::Endpoint;
-use crate::session::{Session, SessionEvent};
+use crate::session::{Session, SessionEvent, SessionHandle};
 
-pub struct ListenerEvent {
-    pub remote: SocketAddr,
-    pub event: SessionEvent,
+pub enum ListenerEvent {
+    /// A connection came up. `handle` is a cheap, cloneable capability
+    /// (e.g. to push a clipboard update) that stays valid for as long as
+    /// the session does — hold on to it if you need it later, this event
+    /// fires exactly once per connection.
+    Connected {
+        remote: SocketAddr,
+        handle: SessionHandle,
+    },
+    Session {
+        remote: SocketAddr,
+        event: SessionEvent,
+    },
 }
 
 pub async fn run(
@@ -66,9 +76,21 @@ async fn accept_and_drain(
     let connection = connecting.await?;
     let remote = connection.remote_address();
     let session = Session::accept(connection, local, keepalive_interval).await?;
+
+    if events
+        .send(ListenerEvent::Connected {
+            remote,
+            handle: session.handle(),
+        })
+        .is_err()
+    {
+        session.close();
+        return Ok(());
+    }
+
     session
         .drain(move |event| {
-            let _ = events.send(ListenerEvent { remote, event });
+            let _ = events.send(ListenerEvent::Session { remote, event });
         })
         .await;
     Ok(())

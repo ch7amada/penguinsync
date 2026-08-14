@@ -1,0 +1,7 @@
+{
+    "uuid": "penguinsync-clipboard@penguinsync.org",
+    "name": "PenguinSync Clipboard",
+    "description": "Exposes the clipboard selection over D-Bus (org.penguinsync.Clipboard) so penguinsyncd can sync it to a paired Android device. Does nothing on its own — install penguinsyncd too. See https://github.com/ch7amada/penguinsync.",
+    "shell-version": ["50"],
+    "url": "https://github.com/ch7amada/penguinsync"
+}

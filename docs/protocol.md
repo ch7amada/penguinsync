@@ -1,6 +1,6 @@
 # PenguinSync Wire Protocol
 
-**Protocol version: 0 (draft — nothing implemented yet)**
+**Protocol version: 1 (M0 + M1 implemented: Handshake, Ping/Pong, Clipboard)**
 
 This document is **normative**. Every change to the wire format must edit this file in the same commit that changes the code, and must bump `PROTOCOL_VERSION` in `crates/protocol/src/lib.rs`.
 
@@ -91,7 +91,7 @@ Debuggability is recovered by logging **decoded** messages through `tracing`, no
 
 ## 6. Messages
 
-> **Draft.** Only the M0 message set is sketched. Everything below changes as milestones land; keep this section in step with `crates/protocol`.
+> Handshake, Ping/Pong and Clipboard are implemented (`crates/protocol/src/message.rs`); everything past that is still sketched and changes as milestones land — keep this section in step with `crates/protocol`.
 
 ### 6.1 Handshake (M0)
 
@@ -108,13 +108,17 @@ Sent first on the control stream by both sides after the QUIC handshake complete
 
 Trivial payload. Exists so the walking skeleton can prove pairing, connection and reconnect without any platform feature attached.
 
-### 6.3 Clipboard (M1–M3)
+### 6.3 Clipboard (M1 implemented, M2–M3 pending)
+
+Broadcast to every connected paired device — no destination field, unlike file transfer.
 
 | Field | Type | Notes |
 |---|---|---|
 | `mime` | `String` | Only `text/plain` accepted in v1; the field exists so images are an addition, not a break |
 | `content` | `Vec<u8>` | Size-capped (~100 KB) |
-| `hash` | `[u8; 32]` | Echo suppression — mandatory, since clipboard broadcasts to all connected devices |
+| `hash` | `[u8; 32]` | BLAKE3 of `content`. Echo suppression — mandatory, since clipboard broadcasts to all connected devices |
+
+M1 is Linux → Android only (GNOME Shell extension read side, Android write path — no permission needed). M2 adds Android → Linux (manual read tier); M3 adds the Shizuku background-read tier. The message shape doesn't change across those — only who's allowed to send it and when.
 
 Content marked sensitive by the source platform (Android's `EXTRA_IS_SENSITIVE`) is **never sent**.
 
