@@ -14,7 +14,20 @@
 //! every Kotlin `callbackFlow` wrapper must end with
 //! `awaitClose { handle.cancel() }`. Getting this wrong leaks tokio tasks inside
 //! a process Android is trying to kill (docs/design.md §4.2).
+//!
+//! # M0
+//!
+//! `PenguinSyncCore::new` and `PenguinSyncCore::pair` are the whole surface —
+//! enough to pair, connect over QUIC, and exchange ping/pong from Kotlin.
+//! `stop`/`send_file`/clipboard arrive with their milestones.
 
 #![forbid(unsafe_code)]
 
 pub use penguinsync_net as net;
+
+mod core;
+mod state;
+
+pub use crate::core::{ConnectionHandle, CoreError, CoreEvent, CoreEventListener, PenguinSyncCore};
+
+uniffi::setup_scaffolding!();

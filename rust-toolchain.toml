@@ -10,6 +10,13 @@
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
-
-# Android targets are added here when the Android build lands with M0:
-#   targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+# arm64-v8a + armeabi-v7a ship in release; x86_64 is debug-only, for the
+# emulator when a phone isn't around (docs/design.md §4.6). i686 is not
+# shipped but kept installed for `cargo check` parity with cargo-ndk's
+# default ABI set.
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "i686-linux-android",
+]
