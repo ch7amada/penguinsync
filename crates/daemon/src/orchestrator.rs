@@ -4,8 +4,11 @@
 //! pairing window — docs/design.md §7) before an event ever reaches here.
 //! What's left is bookkeeping: recognize an already-paired device and flip
 //! its `Connected` property, or walk a brand-new one through the
-//! confirm-by-human step and persist the pin.
+//! confirm-by-human step and persist the pin — plus, since M1, surfacing
+//! each connection's send handle so the clipboard broadcaster
+//! (`crate::clipboard`) has someone to send to.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -22,30 +25,53 @@ pub async fn run(
     shared: Arc<Shared>,
     connection: zbus::Connection,
 ) {
-    while let Some(ListenerEvent { remote, event }) = events.recv().await {
+    while let Some(event) = events.recv().await {
         match event {
-            SessionEvent::PeerHandshake {
-                device_id,
-                name,
-                pairing_token,
-                ..
-            } => {
-                shared
-                    .remote_to_device
-                    .lock()
-                    .await
-                    .insert(remote, device_id);
-                handle_handshake(&shared, &connection, device_id, name, pairing_token).await;
+            ListenerEvent::Connected { remote, handle } => {
+                shared.remote_handles.lock().await.insert(remote, handle);
             }
-            SessionEvent::Ponged { rtt } => {
-                tracing::debug!(?remote, ?rtt, "ping round trip");
+            ListenerEvent::Session { remote, event } => {
+                handle_session_event(&shared, &connection, remote, event).await;
             }
-            SessionEvent::Closed(reason) => {
-                let device_id = shared.remote_to_device.lock().await.remove(&remote);
-                if let Some(id) = device_id {
-                    tracing::info!(device = %message::short_fingerprint(&id), reason = ?close_reason_label(&reason), "device disconnected");
-                    dbus::set_connected(connection.object_server(), &id, false).await;
-                }
+        }
+    }
+}
+
+async fn handle_session_event(
+    shared: &Arc<Shared>,
+    connection: &zbus::Connection,
+    remote: SocketAddr,
+    event: SessionEvent,
+) {
+    match event {
+        SessionEvent::PeerHandshake {
+            device_id,
+            name,
+            pairing_token,
+            ..
+        } => {
+            shared
+                .remote_to_device
+                .lock()
+                .await
+                .insert(remote, device_id);
+            handle_handshake(shared, connection, remote, device_id, name, pairing_token).await;
+        }
+        SessionEvent::Ponged { rtt } => {
+            tracing::debug!(?remote, ?rtt, "ping round trip");
+        }
+        SessionEvent::ClipboardReceived(_) => {
+            // Android -> Linux clipboard write lands in M2 (docs/design.md
+            // §9's roadmap); nothing on the Linux side accepts this yet.
+            tracing::debug!(?remote, "clipboard message received but not yet handled");
+        }
+        SessionEvent::Closed(reason) => {
+            shared.remote_handles.lock().await.remove(&remote);
+            let device_id = shared.remote_to_device.lock().await.remove(&remote);
+            if let Some(id) = device_id {
+                shared.connected_devices.lock().await.remove(&id);
+                tracing::info!(device = %message::short_fingerprint(&id), reason = ?close_reason_label(&reason), "device disconnected");
+                dbus::set_connected(connection.object_server(), &id, false).await;
             }
         }
     }
@@ -54,14 +80,14 @@ pub async fn run(
 async fn handle_handshake(
     shared: &Arc<Shared>,
     connection: &zbus::Connection,
+    remote: SocketAddr,
     device_id: penguinsync_protocol::DeviceId,
     name: String,
     pairing_token: Option<penguinsync_protocol::pairing::TokenBytes>,
 ) {
     if shared.trust.is_paired(&device_id) {
         tracing::info!(device = %message::short_fingerprint(&device_id), %name, "device reconnected");
-        ensure_device_object(shared, connection, device_id, &name).await;
-        dbus::set_connected(connection.object_server(), &device_id, true).await;
+        mark_connected(shared, connection, remote, device_id, &name).await;
         return;
     }
 
@@ -113,9 +139,29 @@ async fn handle_handshake(
     }
     shared.persist_state().await;
 
-    ensure_device_object(shared, connection, device_id, &name).await;
-    dbus::set_connected(connection.object_server(), &device_id, true).await;
+    mark_connected(shared, connection, remote, device_id, &name).await;
     tracing::info!(device = %message::short_fingerprint(&device_id), "paired");
+}
+
+/// Common tail of both the reconnect and the fresh-pairing paths: create/
+/// update the `Device1` object, flip `Connected`, and promote this
+/// connection's send handle so the clipboard broadcaster can reach it.
+async fn mark_connected(
+    shared: &Arc<Shared>,
+    connection: &zbus::Connection,
+    remote: SocketAddr,
+    device_id: penguinsync_protocol::DeviceId,
+    name: &str,
+) {
+    ensure_device_object(shared, connection, device_id, name).await;
+    dbus::set_connected(connection.object_server(), &device_id, true).await;
+    if let Some(handle) = shared.remote_handles.lock().await.get(&remote).cloned() {
+        shared
+            .connected_devices
+            .lock()
+            .await
+            .insert(device_id, handle);
+    }
 }
 
 async fn ensure_device_object(

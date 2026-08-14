@@ -19,9 +19,13 @@ use penguinsync_protocol::pairing::TokenBytes;
 use penguinsync_protocol::{LocalIdentity, backoff};
 
 use crate::endpoint::Endpoint;
-use crate::session::{Session, SessionEvent};
+use crate::session::{Session, SessionEvent, SessionHandle};
 
 pub enum DialerEvent {
+    /// A connection came up. `handle` is a cheap, cloneable capability
+    /// (e.g. to push a clipboard update) that stays valid for as long as
+    /// this connection lasts — one `Connected` per successful (re)connect.
+    Connected(SessionHandle),
     /// An event from the current session — including its terminal `Closed`,
     /// right before this loop starts backing off to retry.
     Session(SessionEvent),
@@ -58,6 +62,13 @@ pub async fn run(
         {
             Ok(session) => {
                 attempt = 0;
+                if events
+                    .send(DialerEvent::Connected(session.handle()))
+                    .is_err()
+                {
+                    session.close();
+                    return;
+                }
                 let tx = events.clone();
                 session
                     .drain(move |event| {

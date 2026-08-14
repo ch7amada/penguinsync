@@ -12,6 +12,7 @@
 use std::time::{Duration, Instant};
 
 use crate::PROTOCOL_VERSION;
+use crate::clipboard::Clip;
 use crate::message::{Capability, DeviceId, Handshake, Message, Ping, Pong};
 use crate::pairing::TokenBytes;
 
@@ -33,6 +34,9 @@ pub enum Event {
     /// Clock tick — drive keepalive. Call this roughly once a second; the
     /// machine decides internally whether it's actually time to ping.
     Tick(Instant),
+    /// The caller (daemon/ffi) wants this clip sent to the peer. Ignored
+    /// before the handshake completes — there's no one to send it to yet.
+    SendClipboard(Clip),
 }
 
 /// Output of the machine. `net` executes these; none of them touch a socket
@@ -54,6 +58,10 @@ pub enum Action {
     },
     /// A round trip completed.
     Ponged { rtt: Duration },
+    /// The peer sent a clipboard update. Broadcast, not targeted — `net`
+    /// doesn't need to do anything with identity here, unlike
+    /// `PeerHandshake` (docs/design.md §6.1).
+    PeerClipboard(Clip),
     /// No `Pong` arrived within the keepalive timeout. `net` should treat the
     /// connection as dead and let the reconnect loop take over.
     KeepaliveTimedOut,
@@ -122,6 +130,13 @@ impl ConnectionMachine {
             }))],
             Event::Received(msg) => self.on_received(msg),
             Event::Tick(now) => self.on_tick(now, next_random_nonce),
+            Event::SendClipboard(clip) => {
+                if self.phase == Phase::Ready {
+                    vec![Action::Send(Message::Clipboard(clip))]
+                } else {
+                    vec![]
+                }
+            }
         }
     }
 
@@ -160,9 +175,11 @@ impl ConnectionMachine {
                     }
                 }
             }
-            // A handshake once Ready, or a ping/pong before Ready, is a
-            // protocol violation from a well-behaved peer. Ignore rather than
-            // tear down the connection over a single stray message.
+            (Phase::Ready, Message::Clipboard(clip)) => vec![Action::PeerClipboard(clip)],
+            // A handshake once Ready, or a ping/pong/clipboard before Ready,
+            // is a protocol violation from a well-behaved peer. Ignore
+            // rather than tear down the connection over a single stray
+            // message.
             _ => vec![],
         }
     }
@@ -212,6 +229,10 @@ mod tests {
             name: format!("device-{id}"),
             capabilities: vec![],
         }
+    }
+
+    fn test_clip() -> Clip {
+        Clip::new(crate::clipboard::MIME_TEXT_PLAIN, b"hello".to_vec()).unwrap()
     }
 
     fn peer_handshake(id: u8) -> Message {
@@ -344,6 +365,43 @@ mod tests {
         assert_eq!(
             m.handle(Event::Tick(t0 + Duration::from_secs(40)), || 1),
             vec![Action::KeepaliveTimedOut]
+        );
+    }
+
+    #[test]
+    fn send_clipboard_before_ready_is_dropped() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        assert!(m.handle(Event::SendClipboard(test_clip()), || 0).is_empty());
+    }
+
+    #[test]
+    fn send_clipboard_once_ready_is_sent() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        m.handle(Event::Received(peer_handshake(2)), || 0);
+        let clip = test_clip();
+        assert_eq!(
+            m.handle(Event::SendClipboard(clip.clone()), || 0),
+            vec![Action::Send(Message::Clipboard(clip))]
+        );
+    }
+
+    #[test]
+    fn received_clipboard_once_ready_is_surfaced() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        m.handle(Event::Received(peer_handshake(2)), || 0);
+        let clip = test_clip();
+        assert_eq!(
+            m.handle(Event::Received(Message::Clipboard(clip.clone())), || 0),
+            vec![Action::PeerClipboard(clip)]
+        );
+    }
+
+    #[test]
+    fn received_clipboard_before_ready_is_ignored() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        assert!(
+            m.handle(Event::Received(Message::Clipboard(test_clip())), || 0)
+                .is_empty()
         );
     }
 }

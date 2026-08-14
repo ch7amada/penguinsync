@@ -1,5 +1,8 @@
 package org.penguinsync.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -32,10 +35,11 @@ import uniffi.penguinsync.CoreEvent
 import uniffi.penguinsync.CoreEventListener
 import uniffi.penguinsync.PenguinSyncCore
 
-/// M0's entire Android UI: paste the QR's URI (real camera scanning is
-/// later platform combat, docs/design.md §9's "isolated from platform
-/// combat"), pair, watch the event log prove handshake/ping-pong/reconnect
-/// are alive. No clipboard, no files, no notifications yet.
+/// M0's pairing UI (paste the QR's URI — real camera scanning is later
+/// platform combat, docs/design.md §9) plus M1's clipboard write path:
+/// Linux's clipboard arrives as [CoreEvent.ClipboardReceived] and this is
+/// the entire Android side of it — write is unrestricted, no permission
+/// needed (docs/design.md §3.1, §6.1).
 class MainActivity : ComponentActivity() {
     private lateinit var core: PenguinSyncCore
     private var handle: ConnectionHandle? = null
@@ -65,6 +69,9 @@ class MainActivity : ComponentActivity() {
                     qrUri,
                     object : CoreEventListener {
                         override fun onEvent(event: CoreEvent) {
+                            if (event is CoreEvent.ClipboardReceived) {
+                                writeToClipboard(event.text)
+                            }
                             runOnUiThread { onEvent(describe(event)) }
                         }
                     },
@@ -80,12 +87,21 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /// Writing is unrestricted from anywhere, foreground or not
+    /// (docs/design.md §3.1) — this is the entire M1 write path, called
+    /// straight from the FFI callback with no UI involved.
+    private fun writeToClipboard(text: String) {
+        val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        manager.setPrimaryClip(ClipData.newPlainText("PenguinSync", text))
+    }
+
     private fun describe(event: CoreEvent): String =
         when (event) {
             is CoreEvent.PeerHandshake -> "✓ connected to ${event.name} (${event.deviceId.take(16)}…)"
             is CoreEvent.Ponged -> "  ping: ${event.rttMs} ms"
             is CoreEvent.Disconnected -> "✗ disconnected: ${event.reason}"
             is CoreEvent.Reconnecting -> "↻ reconnecting (attempt ${event.attempt}, in ${event.delayMs} ms)"
+            is CoreEvent.ClipboardReceived -> "📋 clipboard updated (${event.text.length} chars)"
         }
 }
 

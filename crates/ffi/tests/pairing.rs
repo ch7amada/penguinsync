@@ -95,7 +95,7 @@ fn spawn_fake_linux_daemon() -> (SocketAddr, penguinsync_protocol::DeviceId, Arc
             // itself isn't re-validated here; that's the daemon's job
             // (`crates/daemon/src/orchestrator.rs`), already covered there.
             while let Some(ev) = rx.recv().await {
-                if let listener::ListenerEvent {
+                if let listener::ListenerEvent::Session {
                     event: penguinsync_net::session::SessionEvent::PeerHandshake { device_id, .. },
                     ..
                 } = ev

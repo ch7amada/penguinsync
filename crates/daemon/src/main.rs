@@ -17,6 +17,7 @@
 //! No clipboard, no files, no notifications yet — just identity, pairing,
 //! QUIC, and the D-Bus surface those need (docs/design.md §9).
 
+mod clipboard;
 mod config;
 mod dbus;
 mod net_addrs;
@@ -119,6 +120,8 @@ async fn main() {
         current_token: Mutex::new(None),
         pending_confirmations: Mutex::new(HashMap::new()),
         remote_to_device: Mutex::new(HashMap::new()),
+        remote_handles: Mutex::new(HashMap::new()),
+        connected_devices: Mutex::new(HashMap::new()),
     });
 
     let connection = match zbus::connection::Builder::session()
@@ -181,6 +184,20 @@ async fn main() {
         shared.clone(),
         connection.clone(),
     ));
+
+    // Optional: the daemon must run fine without it (docs/design.md §4.4).
+    match clipboard::GnomeClipboardBackend::probe(&connection).await {
+        Some(backend) => {
+            tracing::info!("GNOME clipboard extension found; clipboard sync active");
+            tokio::spawn(clipboard::watch_and_broadcast(
+                Arc::new(backend),
+                shared.clone(),
+            ));
+        }
+        None => {
+            tracing::info!("GNOME clipboard extension not found; clipboard sync unavailable");
+        }
+    }
 
     tracing::info!(name = %dbus::BUS_NAME, "D-Bus service ready");
 

@@ -17,6 +17,7 @@ use penguinsync_net::{
     tls::TrustStore,
 };
 use penguinsync_protocol::LocalIdentity;
+use penguinsync_protocol::clipboard::{Clip, MIME_TEXT_PLAIN};
 
 const KEEPALIVE: Duration = Duration::from_millis(500);
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -55,8 +56,11 @@ async fn wait_for_listener_handshake(
     rx: &mut mpsc::UnboundedReceiver<listener::ListenerEvent>,
 ) -> penguinsync_protocol::DeviceId {
     loop {
-        let ev = next(rx).await;
-        if let SessionEvent::PeerHandshake { device_id, .. } = ev.event {
+        if let listener::ListenerEvent::Session {
+            event: SessionEvent::PeerHandshake { device_id, .. },
+            ..
+        } = next(rx).await
+        {
             return device_id;
         }
     }
@@ -72,7 +76,11 @@ async fn wait_for_dialer_pong(rx: &mut mpsc::UnboundedReceiver<reconnect::Dialer
 
 async fn wait_for_listener_pong(rx: &mut mpsc::UnboundedReceiver<listener::ListenerEvent>) {
     loop {
-        if let SessionEvent::Ponged { .. } = next(rx).await.event {
+        if let listener::ListenerEvent::Session {
+            event: SessionEvent::Ponged { .. },
+            ..
+        } = next(rx).await
+        {
             return;
         }
     }
@@ -209,6 +217,55 @@ async fn pairs_connects_and_survives_a_dropped_connection() {
 
     wait_for_listener_pong(&mut listener_rx2).await;
     wait_for_dialer_pong(&mut dialer_rx).await;
+}
+
+#[tokio::test]
+async fn broadcasts_a_clipboard_update_over_the_control_stream() {
+    // Linux -> Android is M1's whole direction (docs/design.md's roadmap):
+    // the listener's `SessionHandle` sends, the dialer receives.
+    let linux_identity = Identity::generate().unwrap();
+    let android_identity = Identity::generate().unwrap();
+
+    let linux_trust = Arc::new(TrustStore::new([android_identity.device_id]));
+    let android_trust = Arc::new(TrustStore::new([linux_identity.device_id]));
+
+    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) =
+        spawn_listener(&linux_identity, linux_trust, "127.0.0.1:0".parse().unwrap()).await;
+
+    let android_endpoint = Arc::new(Endpoint::dialing(&android_identity, android_trust).unwrap());
+    let (dialer_tx, mut dialer_rx) = mpsc::unbounded_channel();
+    let android_local = local_identity(android_identity.device_id, "pixel");
+    tokio::spawn(reconnect::run(
+        android_endpoint,
+        linux_addr,
+        android_local,
+        KEEPALIVE,
+        None,
+        dialer_tx,
+    ));
+
+    // Grab the listener's send handle for this connection, and wait for the
+    // handshake on both sides so the message isn't sent before there's a
+    // control stream to carry it.
+    let listener_handle = loop {
+        if let listener::ListenerEvent::Connected { handle, .. } = next(&mut listener_rx).await {
+            break handle;
+        }
+    };
+    wait_for_listener_handshake(&mut listener_rx).await;
+    wait_for_dialer_handshake(&mut dialer_rx).await;
+
+    let clip = Clip::new(MIME_TEXT_PLAIN, b"copied on the desktop".to_vec()).unwrap();
+    listener_handle.send_clipboard(clip.clone());
+
+    loop {
+        if let reconnect::DialerEvent::Session(SessionEvent::ClipboardReceived(received)) =
+            next(&mut dialer_rx).await
+        {
+            assert_eq!(received, clip);
+            break;
+        }
+    }
 }
 
 #[tokio::test]

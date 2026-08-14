@@ -56,6 +56,13 @@ pub enum CoreEvent {
         attempt: u32,
         delay_ms: u64,
     },
+    /// Linux's clipboard changed. Write is unrestricted on Android — no
+    /// permission needed, the M1 write path is just this event handler
+    /// calling `ClipboardManager.setPrimaryClip` (docs/design.md §6.1,
+    /// §3.1).
+    ClipboardReceived {
+        text: String,
+    },
 }
 
 /// Implemented in Kotlin, wrapped once per stream in a `callbackFlow`
@@ -203,28 +210,45 @@ async fn forward_events(
                 tracing::warn!(error = %e, "failed to persist paired peer");
             }
         }
-        listener.on_event(to_core_event(event));
+        if let Some(core_event) = to_core_event(event) {
+            listener.on_event(core_event);
+        }
     }
 }
 
-fn to_core_event(event: DialerEvent) -> CoreEvent {
+/// `None` for events Kotlin has no use for: `Connected` is a plumbing detail
+/// (`PeerHandshake` already tells it "connected"), and a clipboard update
+/// that fails to decode as UTF-8 text — which a well-behaved peer will
+/// never send, `text/plain` is the only MIME v1 accepts — is dropped rather
+/// than forwarded as garbage.
+fn to_core_event(event: DialerEvent) -> Option<CoreEvent> {
     match event {
-        DialerEvent::Reconnecting { attempt, delay } => CoreEvent::Reconnecting {
+        DialerEvent::Connected(_) => None,
+        DialerEvent::Reconnecting { attempt, delay } => Some(CoreEvent::Reconnecting {
             attempt,
             delay_ms: delay.as_millis() as u64,
-        },
+        }),
         DialerEvent::Session(SessionEvent::PeerHandshake {
             device_id, name, ..
-        }) => CoreEvent::PeerHandshake {
+        }) => Some(CoreEvent::PeerHandshake {
             device_id: message::to_hex(&device_id),
             name,
-        },
-        DialerEvent::Session(SessionEvent::Ponged { rtt }) => CoreEvent::Ponged {
+        }),
+        DialerEvent::Session(SessionEvent::ClipboardReceived(clip)) => {
+            match String::from_utf8(clip.content) {
+                Ok(text) => Some(CoreEvent::ClipboardReceived { text }),
+                Err(e) => {
+                    tracing::warn!(error = %e, "clipboard update was not valid UTF-8; dropped");
+                    None
+                }
+            }
+        }
+        DialerEvent::Session(SessionEvent::Ponged { rtt }) => Some(CoreEvent::Ponged {
             rtt_ms: rtt.as_millis() as u64,
-        },
-        DialerEvent::Session(SessionEvent::Closed(reason)) => CoreEvent::Disconnected {
+        }),
+        DialerEvent::Session(SessionEvent::Closed(reason)) => Some(CoreEvent::Disconnected {
             reason: describe_close(reason),
-        },
+        }),
     }
 }
 

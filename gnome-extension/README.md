@@ -1,6 +1,23 @@
 # GNOME Shell extension
 
-**Not yet written.** Lands with M1.
+**Written for M1, not yet enabled in a live session.** `extension.js` + `metadata.json` exist and parse cleanly, but a Shell extension bug hangs the desktop it runs in — enabling this for the first time is deliberately a manual, deliberate step, not something automated.
+
+## Installing (manual, for testing)
+
+```sh
+mkdir -p ~/.local/share/gnome-shell/extensions/penguinsync-clipboard@penguinsync.org
+cp gnome-extension/*.js gnome-extension/metadata.json \
+   ~/.local/share/gnome-shell/extensions/penguinsync-clipboard@penguinsync.org/
+gnome-extensions enable penguinsync-clipboard@penguinsync.org
+```
+
+On Wayland, a *disabled → enabled* toggle doesn't need a shell restart, but a code *change* to an already-enabled extension does (`Alt`+`F2` `r` only works on X11; on Wayland, log out and back in, or `gnome-extensions disable`/`enable` again after copying updated files — for genuinely broken code, `disable` may not respond and a logout is the recovery path).
+
+Verify it's exporting D-Bus before pointing `penguinsyncd` at it:
+
+```sh
+busctl --user introspect org.penguinsync.Clipboard /org/penguinsync/Clipboard
+```
 
 ## Why this exists
 

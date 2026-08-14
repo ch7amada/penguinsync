@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
-use penguinsync_net::{Identity, TrustStore};
+use penguinsync_net::{Identity, SessionHandle, TrustStore};
 use penguinsync_protocol::DeviceId;
 use penguinsync_protocol::pairing::PairingToken;
 
@@ -40,6 +40,17 @@ pub struct Shared {
     /// turned out to be, so a later `Closed` event (which carries no device
     /// identity of its own) can find the right `Device1` object again.
     pub remote_to_device: Mutex<HashMap<SocketAddr, DeviceId>>,
+
+    /// A connection's send handle, keyed by remote address from the moment
+    /// it's accepted — before the handshake names which device it is. Once
+    /// it does, [`crate::orchestrator`] promotes the entry into
+    /// `connected_devices` below.
+    pub remote_handles: Mutex<HashMap<SocketAddr, SessionHandle>>,
+
+    /// Every currently connected, paired device's send handle, keyed by
+    /// device id. What the clipboard broadcaster (docs/design.md §6.1) and,
+    /// later, file transfer iterate to reach live connections.
+    pub connected_devices: Mutex<HashMap<DeviceId, SessionHandle>>,
 }
 
 impl Shared {

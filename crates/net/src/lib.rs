@@ -27,6 +27,7 @@
 
 pub use penguinsync_protocol as protocol;
 
+pub mod clipboard;
 pub mod endpoint;
 pub mod framing;
 pub mod identity;
@@ -35,9 +36,10 @@ pub mod reconnect;
 pub mod session;
 pub mod tls;
 
+pub use clipboard::{ClipChanged, ClipboardBackend, ClipboardError};
 pub use endpoint::{Endpoint, EndpointError};
 pub use identity::{Identity, IdentityError};
 pub use listener::ListenerEvent;
 pub use reconnect::DialerEvent;
-pub use session::{CloseReason, Session, SessionEvent};
+pub use session::{CloseReason, Session, SessionEvent, SessionHandle};
 pub use tls::{PinningVerifier, TrustStore};
