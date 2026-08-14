@@ -12,11 +12,28 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
-use penguinsync_net::{Identity, SessionHandle, TrustStore};
+use penguinsync_net::{ClipboardBackend, Identity, SessionHandle, TrustStore};
 use penguinsync_protocol::DeviceId;
 use penguinsync_protocol::pairing::PairingToken;
 
 use crate::state::PersistedState;
+
+/// Clipboard state shared between the watch-and-broadcast loop (Linux's own
+/// clipboard changing) and the orchestrator's handling of an incoming
+/// `Clipboard` message (Android's clipboard changing, M2) — both directions
+/// go through the same echo-suppression hash, since a write from one side
+/// triggers the other side's own change notification (docs/design.md §6.1).
+#[derive(Default)]
+pub struct ClipboardState {
+    /// `None` until the GNOME extension is found (or if it never is —
+    /// docs/design.md §4.4). Written once at startup, read on every incoming
+    /// clipboard message.
+    pub backend: Mutex<Option<Arc<dyn ClipboardBackend>>>,
+    /// The most recent content hash sent or applied, in either direction.
+    /// Only the immediately previous value is suppressed — see
+    /// `crate::clipboard::should_broadcast`.
+    pub last_hash: Mutex<Option<[u8; 32]>>,
+}
 
 pub struct Shared {
     pub identity: Identity,
@@ -51,6 +68,8 @@ pub struct Shared {
     /// device id. What the clipboard broadcaster (docs/design.md §6.1) and,
     /// later, file transfer iterate to reach live connections.
     pub connected_devices: Mutex<HashMap<DeviceId, SessionHandle>>,
+
+    pub clipboard: ClipboardState,
 }
 
 impl Shared {

@@ -1,6 +1,6 @@
 # PenguinSync Wire Protocol
 
-**Protocol version: 1 (M0 + M1 implemented: Handshake, Ping/Pong, Clipboard)**
+**Protocol version: 1 (M0 + M1 + M2 implemented: Handshake, Ping/Pong, Clipboard — both directions)**
 
 This document is **normative**. Every change to the wire format must edit this file in the same commit that changes the code, and must bump `PROTOCOL_VERSION` in `crates/protocol/src/lib.rs`.
 
@@ -108,7 +108,7 @@ Sent first on the control stream by both sides after the QUIC handshake complete
 
 Trivial payload. Exists so the walking skeleton can prove pairing, connection and reconnect without any platform feature attached.
 
-### 6.3 Clipboard (M1 implemented, M2–M3 pending)
+### 6.3 Clipboard (M1 + M2 implemented, M3 pending)
 
 Broadcast to every connected paired device — no destination field, unlike file transfer.
 
@@ -118,7 +118,7 @@ Broadcast to every connected paired device — no destination field, unlike file
 | `content` | `Vec<u8>` | Size-capped (~100 KB) |
 | `hash` | `[u8; 32]` | BLAKE3 of `content`. Echo suppression — mandatory, since clipboard broadcasts to all connected devices |
 
-M1 is Linux → Android only (GNOME Shell extension read side, Android write path — no permission needed). M2 adds Android → Linux (manual read tier); M3 adds the Shizuku background-read tier. The message shape doesn't change across those — only who's allowed to send it and when.
+M1 is Linux → Android only (GNOME Shell extension read side, Android write path — no permission needed). M2 adds Android → Linux (manual read tier: QS tile, notification action, in-app button, each launching a transparent activity that reads the clipboard once it has window focus — docs/design.md §6.1). M3 adds the Shizuku background-read tier. The message shape didn't change across M1 → M2 — only who's allowed to send it and when; the daemon applies an incoming clip to the local clipboard and relays it to every *other* connected device, echo-suppressed by the same content hash as the M1 direction (`crates/daemon/src/clipboard.rs`).
 
 Content marked sensitive by the source platform (Android's `EXTRA_IS_SENSITIVE`) is **never sent**.
 

@@ -1,23 +1,25 @@
 package org.penguinsync.app
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -30,89 +32,83 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import uniffi.penguinsync.ConnectionHandle
-import uniffi.penguinsync.CoreEvent
-import uniffi.penguinsync.CoreEventListener
-import uniffi.penguinsync.PenguinSyncCore
+import androidx.core.app.ActivityCompat
 
 /// M0's pairing UI (paste the QR's URI — real camera scanning is later
-/// platform combat, docs/design.md §9) plus M1's clipboard write path:
-/// Linux's clipboard arrives as [CoreEvent.ClipboardReceived] and this is
-/// the entire Android side of it — write is unrestricted, no permission
-/// needed (docs/design.md §3.1, §6.1).
+/// platform combat, docs/design.md §9) plus M1's clipboard write path
+/// (Linux -> Android, automatic — handled entirely in [PenguinSyncApp]) plus
+/// M2's in-app manual send button (Android -> Linux). Connection state lives
+/// in [PenguinSyncApp], not here, so it survives this Activity being
+/// destroyed and recreated — the QS tile and notification action
+/// ([ClipboardReadActivity]) need to reach the same live session this screen
+/// does, whether or not this screen is even open.
 class MainActivity : ComponentActivity() {
-    private lateinit var core: PenguinSyncCore
-    private var handle: ConnectionHandle? = null
+    private lateinit var app: PenguinSyncApp
+    private val log = mutableStateListOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        core = PenguinSyncCore(filesDir.absolutePath, Build.MODEL ?: "Android")
+        app = application as PenguinSyncApp
+
+        // Needed for the connected-device notification's "Send clipboard"
+        // action to show up at all on API 33+ (docs/design.md §6.1's
+        // Baseline tier); the QS tile and this screen's own button work
+        // without it either way, so a denial here isn't fatal.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
 
         setContent {
             MaterialTheme {
                 PairingScreen(
-                    fingerprint = core.deviceFingerprint(),
+                    fingerprint = app.core.deviceFingerprint(),
+                    log = log,
                     onPair = ::startPairing,
+                    onSendClipboard = ::sendClipboardNow,
                 )
             }
         }
     }
 
-    private fun startPairing(qrUri: String, onEvent: (String) -> Unit) {
-        // Every long-lived operation gets an explicit cancel — starting a
-        // new pairing attempt cancels whatever the previous one left
-        // running (docs/design.md §4.2's FFI cancellation discipline).
-        handle?.cancel()
-        handle =
-            try {
-                core.pair(
-                    qrUri,
-                    object : CoreEventListener {
-                        override fun onEvent(event: CoreEvent) {
-                            if (event is CoreEvent.ClipboardReceived) {
-                                writeToClipboard(event.text)
-                            }
-                            runOnUiThread { onEvent(describe(event)) }
-                        }
-                    },
-                )
-            } catch (e: Exception) {
-                onEvent("pair() failed: ${e.message}")
-                null
-            }
+    override fun onStart() {
+        super.onStart()
+        app.uiListener = { line -> runOnUiThread { log.add(0, line) } }
     }
 
-    override fun onDestroy() {
-        handle?.cancel()
-        super.onDestroy()
+    override fun onStop() {
+        app.uiListener = null
+        super.onStop()
     }
 
-    /// Writing is unrestricted from anywhere, foreground or not
-    /// (docs/design.md §3.1) — this is the entire M1 write path, called
-    /// straight from the FFI callback with no UI involved.
-    private fun writeToClipboard(text: String) {
-        val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        manager.setPrimaryClip(ClipData.newPlainText("PenguinSync", text))
+    private fun startPairing(qrUri: String) {
+        app.startPairing(qrUri).onFailure { e -> log.add(0, "pair() failed: ${e.message}") }
     }
 
-    private fun describe(event: CoreEvent): String =
-        when (event) {
-            is CoreEvent.PeerHandshake -> "✓ connected to ${event.name} (${event.deviceId.take(16)}…)"
-            is CoreEvent.Ponged -> "  ping: ${event.rttMs} ms"
-            is CoreEvent.Disconnected -> "✗ disconnected: ${event.reason}"
-            is CoreEvent.Reconnecting -> "↻ reconnecting (attempt ${event.attempt}, in ${event.delayMs} ms)"
-            is CoreEvent.ClipboardReceived -> "📋 clipboard updated (${event.text.length} chars)"
+    /// This composable already has window focus by definition, so the
+    /// in-app button reads and sends directly — no trampoline needed,
+    /// unlike the QS tile and notification action (docs/design.md §6.1's
+    /// Baseline tier; contrast [ClipboardReadActivity]).
+    private fun sendClipboardNow() {
+        when (val result = app.sendClipboardFromFocusedContext(this)) {
+            is SendResult.Sent -> log.add(0, "→ clipboard sent to Linux")
+            is SendResult.NothingToSend -> log.add(0, "  clipboard is empty or marked sensitive; nothing sent")
+            is SendResult.Failed -> log.add(0, "✗ send failed: ${result.reason}")
         }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PairingScreen(
     fingerprint: String,
-    onPair: (String, (String) -> Unit) -> Unit,
+    log: List<String>,
+    onPair: (String) -> Unit,
+    onSendClipboard: () -> Unit,
 ) {
     var qrUri by remember { mutableStateOf("") }
-    val log = remember { mutableStateListOf<String>() }
 
     Scaffold(topBar = { TopAppBar(title = { Text("PenguinSync") }) }) { padding ->
         Column(
@@ -136,10 +132,18 @@ private fun PairingScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = { onPair(qrUri) { line -> log.add(0, line) } },
-                enabled = qrUri.startsWith("penguinsync://"),
-            ) { Text("Pair") }
+            Row {
+                Button(
+                    onClick = { onPair(qrUri) },
+                    enabled = qrUri.startsWith("penguinsync://"),
+                ) { Text("Pair") }
+                Spacer(Modifier.width(8.dp))
+                // M2: manual, one-tap read of this device's own clipboard,
+                // sent to Linux (docs/design.md §6.1's Baseline tier). The
+                // QS tile and the connected-device notification's action do
+                // the same thing from outside the app.
+                OutlinedButton(onClick = onSendClipboard) { Text("Send clipboard to Linux") }
+            }
             Spacer(Modifier.height(16.dp))
             Text("Events", style = MaterialTheme.typography.titleMedium)
             LazyColumn {

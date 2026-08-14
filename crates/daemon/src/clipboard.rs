@@ -1,11 +1,16 @@
-//! GNOME Shell extension clipboard backend, and the watch-and-broadcast loop
-//! that sits on top of it (docs/design.md §4.4, §6.1).
+//! GNOME Shell extension clipboard backend, and the two loops that sit on
+//! top of it: [`watch_and_broadcast`] for Linux's clipboard changing (M1),
+//! and [`handle_received`] for a paired device's clipboard changing (M2,
+//! docs/design.md §4.4, §6.1).
 //!
 //! The extension is optional. If it isn't installed or enabled,
 //! [`GnomeClipboardBackend::probe`] returns `None` and the daemon simply
 //! never starts the broadcast loop — clipboard is unavailable, everything
 //! else (pairing, files once they land, notifications once they land) works
-//! fine (docs/design.md §4.4, decision log #39).
+//! fine (docs/design.md §4.4, decision log #39). An incoming clipboard
+//! message from a device is still relayed to other connected devices even
+//! without a backend; it just isn't applied to the (nonexistent) local
+//! clipboard.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -15,6 +20,7 @@ use futures_util::stream::Stream;
 
 use penguinsync_net::{ClipChanged, ClipboardBackend, ClipboardError};
 use penguinsync_protocol::clipboard::{Clip, MIME_TEXT_PLAIN};
+use penguinsync_protocol::{DeviceId, message};
 
 use crate::shared::Shared;
 
@@ -120,7 +126,6 @@ impl ClipboardBackend for GnomeClipboardBackend {
 /// restarted) — logged, not fatal to the daemon.
 pub async fn watch_and_broadcast(backend: Arc<dyn ClipboardBackend>, shared: Arc<Shared>) {
     let mut changes = backend.watch();
-    let mut last_hash: Option<[u8; 32]> = None;
 
     while let Some(change) = changes.next().await {
         if change.mime != MIME_TEXT_PLAIN {
@@ -140,8 +145,11 @@ pub async fn watch_and_broadcast(backend: Arc<dyn ClipboardBackend>, shared: Arc
                 continue;
             }
         };
-        if !should_broadcast(&mut last_hash, clip.hash) {
-            continue;
+        {
+            let mut last_hash = shared.clipboard.last_hash.lock().await;
+            if !should_broadcast(&mut last_hash, clip.hash) {
+                continue;
+            }
         }
 
         let handles: Vec<_> = shared
@@ -162,6 +170,74 @@ pub async fn watch_and_broadcast(backend: Arc<dyn ClipboardBackend>, shared: Arc
         );
     }
     tracing::warn!("clipboard change stream ended; clipboard sync stopped for this session");
+}
+
+/// A paired device sent a clipboard update (M2, docs/design.md §6.1): apply
+/// it to the local clipboard (if a backend is available) and relay it to
+/// every *other* connected paired device — clipboard broadcasts to all,
+/// `sender` excepted since it's the one that just told us about it.
+///
+/// Shares [`ClipboardState::last_hash`](crate::shared::ClipboardState) with
+/// [`watch_and_broadcast`]: writing this content to the GNOME extension
+/// triggers its own `OwnerChange`, and setting the hash here first means
+/// that loop sees nothing new and doesn't send it right back out.
+pub async fn handle_received(shared: &Arc<Shared>, sender: DeviceId, clip: Clip) {
+    // The wire-level handshake (and the Ready phase that unlocks
+    // `SendClipboard`) completes before — and independent of — the human's
+    // pairing confirmation (docs/design.md §7): a connecting device only
+    // needed an open pairing window to get this far, and may yet be
+    // rejected. Pinning is the trust decision; applying or relaying content
+    // from a device that isn't pinned *yet* would leak it to already-paired
+    // devices before that decision is made, or after it's declined.
+    if !shared.trust.is_paired(&sender) {
+        tracing::debug!(
+            device = %message::short_fingerprint(&sender),
+            "clipboard message from an unpaired device; dropping"
+        );
+        return;
+    }
+    if clip.mime != MIME_TEXT_PLAIN {
+        // A well-behaved peer never sends this — v1 only ever constructs a
+        // `Clip` through `Clip::new`, which enforces the MIME restriction.
+        return;
+    }
+
+    let is_new = {
+        let mut last_hash = shared.clipboard.last_hash.lock().await;
+        should_broadcast(&mut last_hash, clip.hash)
+    };
+    if !is_new {
+        return;
+    }
+
+    match shared.clipboard.backend.lock().await.clone() {
+        Some(backend) => {
+            if let Err(e) = backend.write(&clip.mime, &clip.content).await {
+                tracing::warn!(error = %e, "failed to apply received clipboard update locally");
+            }
+        }
+        None => tracing::debug!(
+            "no clipboard backend available; received clipboard update not applied locally"
+        ),
+    }
+
+    let handles: Vec<_> = shared
+        .connected_devices
+        .lock()
+        .await
+        .iter()
+        .filter(|(id, _)| **id != sender)
+        .map(|(_, handle)| handle.clone())
+        .collect();
+    let count = handles.len();
+    for handle in &handles {
+        handle.send_clipboard(clip.clone());
+    }
+    tracing::info!(
+        bytes = clip.content.len(),
+        relayed_to = count,
+        "clipboard received from device"
+    );
 }
 
 /// `true` if `hash` is new since the last call — the one place the "did the

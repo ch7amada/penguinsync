@@ -8,8 +8,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- M2's notification-action trigger needs this to post anything at all
+         on API 33+ (docs/design.md §6.1's Baseline tier); requested at
+         runtime from MainActivity, best-effort — the QS tile and in-app
+         button still work without it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".PenguinSyncApp"
         android:allowBackup="false"
         android:label="PenguinSync"
         android:supportsRtl="true">
@@ -23,5 +29,36 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Transparent trampoline for M2's manual clipboard-send path
+             (docs/design.md §6.1, §9): the QS tile and the notification
+             action both launch this instead of reading the clipboard
+             themselves, since neither has window focus (§3.1) —
+             `ClipboardReadActivity` waits for `onWindowFocusChanged(true)`,
+             then reads, sends, and finishes with no visible frame. Only our
+             own PendingIntents launch it. -->
+        <activity
+            android:name=".ClipboardReadActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- QS tile for the same manual send path. `exported="true"` +
+             `BIND_QUICK_SETTINGS_TILE` is the documented shape for a tile
+             service — System UI must be able to bind it before the app has
+             ever run in the foreground; the permission restricts binding to
+             the system itself. -->
+        <service
+            android:name=".PenguinSyncTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_penguinsync_clipboard"
+            android:label="Send clipboard"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

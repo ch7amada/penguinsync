@@ -122,6 +122,7 @@ async fn main() {
         remote_to_device: Mutex::new(HashMap::new()),
         remote_handles: Mutex::new(HashMap::new()),
         connected_devices: Mutex::new(HashMap::new()),
+        clipboard: crate::shared::ClipboardState::default(),
     });
 
     let connection = match zbus::connection::Builder::session()
@@ -189,10 +190,12 @@ async fn main() {
     match clipboard::GnomeClipboardBackend::probe(&connection).await {
         Some(backend) => {
             tracing::info!("GNOME clipboard extension found; clipboard sync active");
-            tokio::spawn(clipboard::watch_and_broadcast(
-                Arc::new(backend),
-                shared.clone(),
-            ));
+            let backend: Arc<dyn penguinsync_net::ClipboardBackend> = Arc::new(backend);
+            // Stashed on `Shared` too (not just moved into the broadcast
+            // loop below) so the orchestrator's M2 receive path can write
+            // an incoming clipboard update to the same backend.
+            *shared.clipboard.backend.lock().await = Some(backend.clone());
+            tokio::spawn(clipboard::watch_and_broadcast(backend, shared.clone()));
         }
         None => {
             tracing::info!("GNOME clipboard extension not found; clipboard sync unavailable");
