@@ -65,7 +65,10 @@ mod tests {
             assert!(line.chars().count() <= rendered.width as usize);
         }
         assert!(
-            rendered.text.lines().any(|l| l.chars().count() == rendered.width as usize),
+            rendered
+                .text
+                .lines()
+                .any(|l| l.chars().count() == rendered.width as usize),
             "at least one line should be exactly the reported width",
         );
     }
