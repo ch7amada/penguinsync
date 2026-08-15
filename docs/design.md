@@ -1,6 +1,6 @@
 # PenguinSync — Design Document
 
-**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier); see §9 for what's next.
+**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier), and released as **v0.1.0**; see §9 for what's next, `CHANGELOG.md` for what shipped, and `docs/RELEASING.md` for how releases are cut.
 **Date:** 2026-08-14
 **Author:** ch7amada
 **Supersedes:** `mynotes.md` (kept for provenance; where the two disagree, this document wins)
@@ -189,6 +189,8 @@ Two binaries from one workspace.
 
 **`penguinsync`** — `ratatui` TUI for status, device list, pairing QR display, and confirm/revoke; plus non-interactive CLI verbs (`penguinsync send file.pdf`, `penguinsync debug`). Both are thin clients over a shared D-Bus client module. Room to grow into a full dashboard with transfer progress at M4, but not before the protocol works.
 
+The pairing view shows a live countdown and re-mints the code the moment its `TOKEN_TTL` runs out, so the QR on screen is always the one the daemon will accept. Refreshing exactly *at* expiry rather than early is deliberate: the daemon holds a single token, so an early refresh would discard one that a phone might be redeeming right then. It never refreshes while a confirmation prompt is open, for the same reason.
+
 **Config vs state, strictly separated by owner:**
 
 | | Path | Format | Owner |
@@ -244,7 +246,9 @@ A native C/Rust extension was considered and rejected — the only Rust bindings
 
 ### 4.6 Android app
 
-**Baseline:** minSdk **31** (Android 12), targetSdk **37**, Compose + Material 3, Hilt, DataStore, coroutines/Flow. Room only when there is history to store.
+**Baseline:** minSdk **31** (Android 12), targetSdk **37**, Compose + **Material 3 Expressive**, coroutines/Flow. Hilt and DataStore are still unused as of M2 — there is no dependency graph worth injecting and no preference bigger than a boolean; both arrive when M3's per-device state does. Room only when there is history to store.
+
+**Theming:** the palette is generated from a single seed, `#01579B` — the same deep ocean blue as the launcher icon background — through Material's *expressive* scheme variant, which rotates secondary and tertiary away from the primary hue. That rotation is load-bearing rather than decorative: tertiary lands on green, so "connected" is a real theme role instead of a hardcoded literal that breaks in dark mode. Amber is supplied by hand for "reconnecting", which Material has no role for. Dynamic colour (Material You) is offered as a Settings toggle and is **off** by default, so the app shows its own identity unless asked not to. The expressive API surface exists but is `internal` in material3 1.4.0, so `:app` pins **material3 1.5.0-alpha**; it is the only pre-release artifact in the graph, and the pin goes away when 1.5.0 stabilises.
 
 **Gradle modules:** `:app` (UI, services, permissions) and `:core` (generated UniFFI bindings + `jniLibs`). Fine-grained modularization is unnecessary — the Rust boundary already buys most of what it would.
 

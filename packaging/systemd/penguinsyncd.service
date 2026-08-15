@@ -1,0 +1,32 @@
+[Unit]
+Description=PenguinSync daemon
+Documentation=https://github.com/ch7amada/penguinsync
+# Ordering only. The clipboard is per-session, which is why this is a *user*
+# unit rather than a system one (docs/design.md §4.3).
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/penguinsyncd
+Restart=on-failure
+RestartSec=5
+
+# Deliberately always running: not D-Bus-activated, no idle exit. A clipboard
+# daemon that exits when idle is not a clipboard daemon (docs/design.md §4.3).
+
+# Logs go to journald directly (tracing-journald), so nothing is configured
+# here. Follow them with:
+#   journalctl --user -u penguinsyncd -f
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Further sandboxing (ProtectSystem, ProtectHome, ReadWritePaths) is
+# deliberately absent rather than guessed at. The daemon needs the session
+# bus, the network, and its own XDG directories, and a hardening directive
+# that quietly cuts off one of those produces a daemon that starts and then
+# does nothing. Add it with a unit test run against a real session, not from
+# a template.
+
+[Install]
+WantedBy=default.target

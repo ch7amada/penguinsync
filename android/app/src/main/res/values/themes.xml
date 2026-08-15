@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app declared no theme at all until now, which is why it opened with the
+  platform's default black action bar above a Compose UI that had already drawn
+  its own. This theme exists to get out of Compose's way: no action bar, no
+  title, and a window background that matches the Compose surface so there is
+  no white flash between the window opening and the first frame.
+
+  Parent is a platform theme rather than one from
+  com.google.android.material — nothing here needs that library, and the
+  dependency list stays as short as the F-Droid target wants it
+  (docs/design.md §1). Colours are supplied by Compose
+  (ui/theme/Color.kt), not by attributes here; the only value this file
+  really has to get right is windowBackground.
+-->
+<resources>
+    <style name="Theme.PenguinSync" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <!-- PenguinSyncLightColors.surface -->
+        <item name="android:windowBackground">@color/window_background</item>
+        <!-- Edge-to-edge is enforced at targetSdk 35+ anyway; declaring it
+             here as well keeps the pre-Compose frame consistent with what
+             enableEdgeToEdge() sets up in MainActivity. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

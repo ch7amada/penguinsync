@@ -129,6 +129,12 @@ class PenguinSyncConnectionService : Service() {
                 .setContentTitle(title)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                // Brand blue, so the ongoing notification is recognisable as
+                // this app's in a shade full of them. Fixed rather than read
+                // from the Compose theme: a service has no composition, and
+                // this notification exists precisely when no UI does.
+                .setColor(ContextCompat.getColor(this, R.color.ic_launcher_background))
+                .setColorized(false)
         if (action != null) builder.addAction(action)
         return builder.build()
     }

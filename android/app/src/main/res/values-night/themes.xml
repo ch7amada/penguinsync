@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dark counterpart of values/themes.xml. Only the two things that actually
+  differ before Compose takes over are overridden: the platform parent (so the
+  system's own decorations are dark) and the light-bar flags. windowBackground
+  comes from values-night/colors.xml.
+-->
+<resources>
+    <style name="Theme.PenguinSync" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <!-- PenguinSyncDarkColors.surface -->
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
