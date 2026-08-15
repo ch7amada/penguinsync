@@ -11,7 +11,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The toolchain version comes from rust-toolchain.toml — pinned exactly,
       # so CI and F-Droid build with the same compiler (docs/reproducible-builds.md).

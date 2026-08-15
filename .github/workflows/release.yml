@@ -33,7 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: check
         run: |
           cargo_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -54,7 +54,7 @@ jobs:
     needs: version-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The toolchain version comes from rust-toolchain.toml.
       - run: rustc --version && cargo --version
       - run: ./packaging/build-linux-bundle.sh
@@ -67,21 +67,33 @@ jobs:
     needs: version-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Install the Android SDK pieces this build needs
         run: |
+          # The runner ships the SDK but does not put its command-line tools on
+          # PATH, and the directory under cmdline-tools/ is named differently
+          # across runner images ("latest", or a version number). Locating the
+          # binary is more durable than hardcoding either.
+          sdk_root="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          sdkmanager="$(find "$sdk_root/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)"
+          if [ -z "$sdkmanager" ]; then
+            echo "::error::no sdkmanager under $sdk_root/cmdline-tools"
+            exit 1
+          fi
+          echo "Using $sdkmanager"
+
           # Licences first, so AGP is allowed to fetch the build-tools it wants
           # on its own — pinning a build-tools version here would be one more
           # thing to bump every time compileSdk moves.
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-37" "ndk;${NDK_VERSION}"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          yes | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" "platforms;android-37" "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$sdk_root/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Rust Android targets and cargo-ndk
         run: |
@@ -119,7 +131,7 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
