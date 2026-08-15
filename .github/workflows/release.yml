@@ -92,8 +92,20 @@ jobs:
           # on its own — pinning a build-tools version here would be one more
           # thing to bump every time compileSdk moves.
           yes | "$sdkmanager" --licenses > /dev/null
-          "$sdkmanager" "platforms;android-37" "ndk;${NDK_VERSION}"
+
+          # The NDK is not optional and nothing else will fetch it: cargo-ndk
+          # is driven from a plain Gradle Exec task, so AGP never learns that
+          # this build has native code at all.
+          "$sdkmanager" "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$sdk_root/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+          # Platform packages carry a *minor* version now — the package for
+          # compileSdk 37 is "android-37.0", and plain "android-37" does not
+          # exist. Tolerated rather than required: with the licences accepted
+          # above, AGP downloads the platform itself if this name is ever
+          # wrong again, so a naming change should not block a release.
+          "$sdkmanager" "platforms;android-37.0" \
+            || echo "::warning::could not install platforms;android-37.0 — leaving it to AGP"
 
       - name: Rust Android targets and cargo-ndk
         run: |
