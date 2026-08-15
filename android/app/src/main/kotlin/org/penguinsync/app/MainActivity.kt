@@ -6,15 +6,18 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.app.ActivityCompat
 import org.penguinsync.app.ui.ConnectionStatus
+import org.penguinsync.app.ui.LogEntry
+import org.penguinsync.app.ui.LogSeverity
 import org.penguinsync.app.ui.PenguinSyncScaffold
 import org.penguinsync.app.ui.reduce
+import org.penguinsync.app.ui.theme.PenguinSyncTheme
 import uniffi.penguinsync.CoreEvent
 import uniffi.penguinsync.PairedDevice
 
@@ -28,12 +31,16 @@ import uniffi.penguinsync.PairedDevice
 /// just a read of that stream, rebuilt fresh every time this screen starts.
 class MainActivity : ComponentActivity() {
     private lateinit var app: PenguinSyncApp
-    private val log = mutableStateListOf<String>()
+    private val log = mutableStateListOf<LogEntry>()
     private var connectionStatus by mutableStateOf<ConnectionStatus>(ConnectionStatus.NotPaired)
     private var pairedDevices by mutableStateOf<List<PairedDevice>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before setContent: the system bars have to be transparent from the
+        // very first frame, otherwise the window opens with an opaque bar in
+        // the platform theme's colour and then repaints.
+        enableEdgeToEdge()
         app = application as PenguinSyncApp
 
         // Needed for the connected-device notification's "Send clipboard"
@@ -49,14 +56,17 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            PenguinSyncTheme(dynamicColor = app.useDynamicColor) {
                 PenguinSyncScaffold(
                     fingerprint = app.core.deviceFingerprint(),
                     connectionStatus = connectionStatus,
                     pairedDevices = pairedDevices,
                     log = log,
+                    dynamicColor = app.useDynamicColor,
+                    onDynamicColorChange = app::setDynamicColor,
                     onPair = ::startPairing,
                     onSendClipboard = ::sendClipboardNow,
+                    onClearLog = log::clear,
                 )
             }
         }
@@ -89,7 +99,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startPairing(qrUri: String) {
-        app.startPairing(qrUri).onFailure { e -> log.add(0, "pair() failed: ${e.message}") }
+        app.startPairing(qrUri).onFailure { e ->
+            log.add(0, LogEntry.now("pair() failed: ${e.message}", LogSeverity.BAD))
+        }
     }
 
     /// This is called from the Devices screen, which already has window
@@ -97,10 +109,16 @@ class MainActivity : ComponentActivity() {
     /// no trampoline needed, unlike the QS tile and notification action
     /// (docs/design.md §6.1's Baseline tier; contrast [ClipboardReadActivity]).
     private fun sendClipboardNow() {
-        when (val result = app.sendClipboardFromFocusedContext(this)) {
-            is SendResult.Sent -> log.add(0, "→ clipboard sent to Linux")
-            is SendResult.NothingToSend -> log.add(0, "  clipboard is empty or marked sensitive; nothing sent")
-            is SendResult.Failed -> log.add(0, "✗ send failed: ${result.reason}")
-        }
+        val entry =
+            when (val result = app.sendClipboardFromFocusedContext(this)) {
+                is SendResult.Sent -> LogEntry.now("clipboard sent to Linux", LogSeverity.GOOD)
+                is SendResult.NothingToSend ->
+                    LogEntry.now(
+                        "clipboard is empty or marked sensitive; nothing sent",
+                        LogSeverity.INFO,
+                    )
+                is SendResult.Failed -> LogEntry.now("send failed: ${result.reason}", LogSeverity.BAD)
+            }
+        log.add(0, entry)
     }
 }

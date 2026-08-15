@@ -8,9 +8,16 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Build
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import org.penguinsync.app.ui.ConnectionStatus
+import org.penguinsync.app.ui.LogEntry
+import org.penguinsync.app.ui.LogSeverity
 import org.penguinsync.app.ui.reduce
 import uniffi.penguinsync.ConnectionHandle
 import uniffi.penguinsync.CoreEvent
@@ -83,10 +90,35 @@ class PenguinSyncApp : Application() {
     /// outlive any single event once a connection exists.
     var serviceListener: ((CoreEvent) -> Unit)? = null
 
+    private lateinit var prefs: SharedPreferences
+
+    /// Whether to theme the app from the wallpaper (Material You) instead of
+    /// PenguinSync's own palette. Every device this app runs on supports
+    /// dynamic colour (minSdk 31), so this is purely a taste setting; the
+    /// brand palette is the default.
+    ///
+    /// Plain `SharedPreferences` rather than the DataStore the design doc
+    /// names as baseline (docs/design.md §4.6), and deliberately so: DataStore
+    /// only hands out its value through a `Flow`, which Compose has to collect
+    /// with some initial value, which means every cold start would visibly
+    /// repaint from the brand palette to the user's wallpaper colours. A
+    /// single boolean read synchronously before the first frame has no such
+    /// problem. DataStore earns its place at M3, when there is per-device
+    /// state worth the machinery.
+    var useDynamicColor: Boolean by mutableStateOf(false)
+        private set
+
     override fun onCreate() {
         super.onCreate()
         core = PenguinSyncCore(filesDir.absolutePath, Build.MODEL ?: "Android")
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        useDynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
         createNotificationChannel()
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        useDynamicColor = enabled
+        prefs.edit { putBoolean(KEY_DYNAMIC_COLOR, enabled) }
     }
 
     /// Starts (or restarts) pairing. Cancelling whatever the previous
@@ -178,19 +210,34 @@ class PenguinSyncApp : Application() {
     }
 
     /// Shared by the Debug screen's event log — one formatting rule, read by
-    /// whichever screen is currently subscribed to [uiListener].
-    fun describe(event: CoreEvent): String =
+    /// whichever screen is currently subscribed to [uiListener]. Returns a
+    /// structured [LogEntry] rather than a bare string so the screen can
+    /// colour a failure without pattern-matching the text back apart.
+    fun describe(event: CoreEvent): LogEntry =
         when (event) {
-            is CoreEvent.PeerHandshake -> "✓ connected to ${event.name} (${event.deviceId.take(16)}…)"
-            is CoreEvent.Ponged -> "  ping: ${event.rttMs} ms"
-            is CoreEvent.Disconnected -> "✗ disconnected: ${event.reason}"
-            is CoreEvent.Reconnecting -> "↻ reconnecting (attempt ${event.attempt}, in ${event.delayMs} ms)"
-            is CoreEvent.ClipboardReceived -> "📋 clipboard updated (${event.text.length} chars)"
+            is CoreEvent.PeerHandshake ->
+                LogEntry.now(
+                    "connected to ${event.name} (${event.deviceId.take(16)}…)",
+                    LogSeverity.GOOD,
+                )
+            is CoreEvent.Ponged -> LogEntry.now("ping ${event.rttMs} ms", LogSeverity.INFO)
+            is CoreEvent.Disconnected ->
+                LogEntry.now("disconnected: ${event.reason}", LogSeverity.BAD)
+            is CoreEvent.Reconnecting ->
+                LogEntry.now(
+                    "reconnecting (attempt ${event.attempt}, in ${event.delayMs} ms)",
+                    LogSeverity.WARN,
+                )
+            is CoreEvent.ClipboardReceived ->
+                LogEntry.now("clipboard updated (${event.text.length} chars)", LogSeverity.INFO)
         }
 
     companion object {
         /// Shared with [PenguinSyncConnectionService], which owns the actual
         /// notification built on this channel.
         const val CHANNEL_ID = "penguinsync-connection"
+
+        private const val PREFS_NAME = "penguinsync-ui"
+        private const val KEY_DYNAMIC_COLOR = "dynamic_color"
     }
 }

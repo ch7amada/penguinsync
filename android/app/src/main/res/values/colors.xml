@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Launcher icon background — deep ocean blue, the one splash of brand
-         color in an otherwise stock-Material app. -->
+    <!-- Launcher icon background — deep ocean blue. Also the seed the whole
+         Compose palette is generated from (ui/theme/Color.kt), so the icon
+         and the app are the same blue by construction rather than by
+         coincidence. -->
     <color name="ic_launcher_background">#01579B</color>
+
+    <!-- Must stay equal to PenguinSyncLightColors.surface: this is what the
+         window is painted with before Compose has drawn anything, and any
+         mismatch shows up as a flash on cold start. -->
+    <color name="window_background">#F8F9FF</color>
 </resources>

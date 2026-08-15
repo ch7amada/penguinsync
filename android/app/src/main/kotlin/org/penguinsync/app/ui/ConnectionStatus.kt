@@ -37,6 +37,18 @@ fun ConnectionStatus.reduce(event: CoreEvent): ConnectionStatus =
         is CoreEvent.ClipboardReceived -> this
     }
 
+/// One line for the top app bar's subtitle. Shorter than
+/// [notificationTitle]'s text on purpose — an app bar subtitle is read at a
+/// glance, and the Devices screen's status card right below it carries the
+/// detail.
+fun ConnectionStatus.summary(): String =
+    when (this) {
+        is ConnectionStatus.NotPaired -> "No device paired"
+        is ConnectionStatus.Connected -> lastRttMs?.let { "$name · $it ms" } ?: name
+        is ConnectionStatus.Reconnecting -> "Reconnecting…"
+        is ConnectionStatus.Disconnected -> "Disconnected"
+    }
+
 /// [PenguinSyncConnectionService]'s notification title/action off the same
 /// folded status the Devices screen renders, instead of re-deriving it from
 /// raw [CoreEvent]s itself — a service that only rebuilds its notification on

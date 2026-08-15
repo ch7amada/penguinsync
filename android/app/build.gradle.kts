@@ -44,10 +44,20 @@ dependencies {
     // Non-deprecated `LocalLifecycleOwner` for QrScanner.kt's CameraX bind
     // (the one on androidx.compose.ui.platform is deprecated).
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
-    implementation(platform("androidx.compose:compose-bom:2025.06.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.material3:material3")
+    // Pinned above the BOM on purpose. Material 3 Expressive — the theme, the
+    // motion scheme, ShortNavigationBar, the flexible title+subtitle app bars
+    // — ships inside material3 1.4.0 (what the BOM resolves) but every one of
+    // those declarations is `internal` there, so none of it can be called.
+    // 1.5.0-alpha is the first release that makes the API public.
+    //
+    // The alpha is contained: it is the only pre-release artifact in the
+    // graph. It asks for foundation/animation 1.12.0-beta01 and the BOM's
+    // stable 1.12.0 wins those, so nothing else in the app is on a
+    // pre-release version. Revisit when 1.5.0 goes stable.
+    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.9.0")
     // JNA (uniffi's Kotlin bindings need it) comes in transitively via
