@@ -39,6 +39,12 @@ echo "==> Packing"
 tar -C dist -czf "dist/$name.tar.gz" "$name"
 (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
 
+# The staging tree is an intermediate, and leaving it in dist/ is not
+# harmless: the release job collects every file under dist/ and attaches it,
+# so an unpacked bundle turns into a dozen stray release assets — LICENSE,
+# install.sh, the raw binaries — sitting next to the tarball.
+rm -rf "$staging"
+
 echo
 echo "dist/$name.tar.gz"
 cat "dist/$name.tar.gz.sha256"
