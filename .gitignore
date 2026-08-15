@@ -29,3 +29,10 @@ __pycache__/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Release artifacts
+/dist/
+
+# Android release signing — never commit the keystore or its passwords
+/android/keystore.properties
+*.jks

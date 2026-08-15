@@ -1,0 +1,147 @@
+name: release
+
+# Cut a release by pushing a tag:
+#
+#     git tag -a v0.1.0 -m "PenguinSync 0.1.0" && git push origin v0.1.0
+#
+# The version in the tag must match `[workspace.package] version` in
+# Cargo.toml and `versionName` in android/app/build.gradle.kts — the job
+# checks, and fails loudly rather than publishing three different opinions
+# about what this release is.
+#
+# workflow_dispatch builds both artifacts without publishing anything, which
+# is how you find out the Android toolchain still works without burning a tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned rather than "latest": the NDK is a compiler, and an unpinned
+  # compiler makes builds unreproducible (docs/reproducible-builds.md).
+  NDK_VERSION: 28.2.13676358
+  CARGO_NDK_VERSION: 4.1.2
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          cargo_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          gradle_version="$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' android/app/build.gradle.kts | head -1)"
+          echo "Cargo.toml:       $cargo_version"
+          echo "build.gradle.kts: $gradle_version"
+          if [ "$cargo_version" != "$gradle_version" ]; then
+            echo "::error::version mismatch between Cargo.toml and android/app/build.gradle.kts"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$cargo_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version $cargo_version"
+            exit 1
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain version comes from rust-toolchain.toml.
+      - run: rustc --version && cargo --version
+      - run: ./packaging/build-linux-bundle.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: dist/*
+
+  android:
+    needs: version-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install the Android SDK pieces this build needs
+        run: |
+          # Licences first, so AGP is allowed to fetch the build-tools it wants
+          # on its own — pinning a build-tools version here would be one more
+          # thing to bump every time compileSdk moves.
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-37" "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Rust Android targets and cargo-ndk
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
+
+      # The keystore never exists in the repository. On a tag build it comes
+      # from repository secrets; without them the APK would be unsigned, and
+      # packaging/build-android-release.sh refuses to produce one.
+      - name: Restore the signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PENGUINSYNC_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::PENGUINSYNC_KEYSTORE_BASE64 is not set — the APK will be unsigned and the build will fail at the packaging step."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/penguinsync.jks"
+          echo "PENGUINSYNC_KEYSTORE_FILE=$RUNNER_TEMP/penguinsync.jks" >> "$GITHUB_ENV"
+
+      - name: Build the release APK
+        env:
+          PENGUINSYNC_KEYSTORE_PASSWORD: ${{ secrets.PENGUINSYNC_KEYSTORE_PASSWORD }}
+          PENGUINSYNC_KEY_ALIAS: ${{ secrets.PENGUINSYNC_KEY_ALIAS }}
+          PENGUINSYNC_KEY_PASSWORD: ${{ secrets.PENGUINSYNC_KEY_PASSWORD }}
+        run: ./packaging/build-android-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*
+
+  publish:
+    needs: [version-check, linux, android]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect artifacts and the changelog entry
+        env:
+          VERSION: ${{ needs.version-check.outputs.version }}
+        run: |
+          mkdir -p dist && find artifacts -type f -exec mv {} dist/ \;
+          ls -la dist
+          # The release body is the matching CHANGELOG section, so the
+          # changelog stays the single place release notes are written.
+          awk -v v="## [$VERSION]" '
+            index($0, v) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          cat release-notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "PenguinSync ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            dist/*

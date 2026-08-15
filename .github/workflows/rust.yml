@@ -31,5 +31,10 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-# An Android job (assembleDebug + unit tests) is added when the Gradle project
-# lands with M0. Release automation waits until there is a release.
+# Release automation lives in release.yml, which builds the Linux tarball and
+# the signed APK on a version tag.
+#
+# An Android job (assembleDebug + unit tests) still belongs here. It needs the
+# SDK, the NDK and cargo-ndk on every push — several minutes a run — so it is
+# deliberately not in this fast pre-merge job yet. release.yml exercises the
+# same toolchain, and `workflow_dispatch` runs it on demand.

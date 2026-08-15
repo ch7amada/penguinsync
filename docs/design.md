@@ -1,6 +1,6 @@
 # PenguinSync — Design Document
 
-**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier); see §9 for what's next.
+**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier), and released as **v0.1.0**; see §9 for what's next, `CHANGELOG.md` for what shipped, and `docs/RELEASING.md` for how releases are cut.
 **Date:** 2026-08-14
 **Author:** ch7amada
 **Supersedes:** `mynotes.md` (kept for provenance; where the two disagree, this document wins)
