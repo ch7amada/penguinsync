@@ -41,6 +41,16 @@ pub enum CoreError {
     NotConnected,
 }
 
+/// One row of the Devices screen's paired-device list — read straight from
+/// the persisted-peers file, not the live session, so it shows every device
+/// ever paired with, connected or not (docs/design.md §4.6). `device_id` is
+/// hex-encoded, matching [`CoreEvent::PeerHandshake`].
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct PairedDevice {
+    pub device_id: String,
+    pub name: String,
+}
+
 #[derive(uniffi::Enum, Debug, Clone)]
 pub enum CoreEvent {
     /// The peer's handshake arrived and versions matched. `device_id` is
@@ -216,6 +226,20 @@ impl PenguinSyncCore {
             }
             None => Err(CoreError::NotConnected),
         }
+    }
+
+    /// Read-only snapshot for the Devices screen — every device ever paired
+    /// with, from disk. Cheap enough to call on every recomposition trigger
+    /// rather than caching in Kotlin: it's a small JSON file read, not a
+    /// network round trip.
+    pub fn list_paired_devices(&self) -> Vec<PairedDevice> {
+        PersistedPeers::load(&self.peers_path)
+            .entries()
+            .map(|(device_id, name)| PairedDevice {
+                device_id: device_id.to_string(),
+                name: name.to_string(),
+            })
+            .collect()
     }
 }
 

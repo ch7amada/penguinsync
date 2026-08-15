@@ -7,10 +7,13 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
+import android.content.Context
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
+import org.penguinsync.app.ui.notificationTitle
 import uniffi.penguinsync.CoreEvent
 
 /// Foreground service, type `connectedDevice` (docs/design.md §4.6,
@@ -60,11 +63,24 @@ class PenguinSyncConnectionService : Service() {
                 }
     }
 
+    /// Also reposts the notification off the app's real current
+    /// [org.penguinsync.app.ui.ConnectionStatus] every time this fires — not
+    /// just at `onCreate`. That's what makes the Settings screen's "Restore
+    /// notification" button (docs/design.md §6.1) work: a swiped-away
+    /// notification doesn't come back on its own from [onCoreEvent] alone,
+    /// since idle traffic while `Connected` is just `Ponged`s, which that
+    /// event-triggered path ignores. Redelivering `onStartCommand` here (via
+    /// [restore]) is a cheap, always-correct way to force a repost.
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
         startId: Int,
-    ): Int = START_STICKY
+    ): Int {
+        val (title, sendActionAvailable) = (application as PenguinSyncApp).connectionStatus.notificationTitle()
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(title, if (sendActionAvailable) sendAction() else null))
+        return START_STICKY
+    }
 
     override fun onDestroy() {
         (application as PenguinSyncApp).serviceListener = null
@@ -76,13 +92,14 @@ class PenguinSyncConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun onCoreEvent(event: CoreEvent) {
-        val (title, sendActionAvailable) =
-            when (event) {
-                is CoreEvent.PeerHandshake -> "Connected to ${event.name}" to true
-                is CoreEvent.Reconnecting -> "Reconnecting…" to false
-                is CoreEvent.Disconnected -> "Disconnected: ${event.reason}" to false
-                else -> return
-            }
+        // Ponged/ClipboardReceived don't change the folded status (see
+        // ConnectionStatus.reduce) — skip the repost, no point renotifying
+        // with identical content on every keepalive.
+        when (event) {
+            is CoreEvent.PeerHandshake, is CoreEvent.Reconnecting, is CoreEvent.Disconnected -> {}
+            else -> return
+        }
+        val (title, sendActionAvailable) = (application as PenguinSyncApp).connectionStatus.notificationTitle()
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(title, if (sendActionAvailable) sendAction() else null))
     }
@@ -118,5 +135,14 @@ class PenguinSyncConnectionService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
+
+        /// Settings screen's "Restore notification" button. Safe to call
+        /// whether or not the service is already running: if it is, this
+        /// just redelivers `onStartCommand`, which reposts the notification
+        /// (see above); if pairing hasn't happened yet, it's a no-op beyond
+        /// the service coming up idle at [org.penguinsync.app.ui.ConnectionStatus.NotPaired].
+        fun restore(context: Context) {
+            ContextCompat.startForegroundService(context, Intent(context, PenguinSyncConnectionService::class.java))
+        }
     }
 }

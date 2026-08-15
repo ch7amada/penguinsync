@@ -10,9 +10,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
+import org.penguinsync.app.ui.ConnectionStatus
+import org.penguinsync.app.ui.reduce
 import uniffi.penguinsync.ConnectionHandle
 import uniffi.penguinsync.CoreEvent
 import uniffi.penguinsync.CoreEventListener
+import uniffi.penguinsync.PairedDevice
 import uniffi.penguinsync.PenguinSyncCore
 
 /// Outcome of trying to send this device's clipboard to Linux
@@ -52,13 +55,27 @@ class PenguinSyncApp : Application() {
     var connectionHandle: ConnectionHandle? = null
         private set
 
+    /// Folded connection state, kept app-wide instead of inside whichever
+    /// Activity happens to be alive. Updated unconditionally in
+    /// [handleCoreEvent] — not only while a [uiListener] is attached — so a
+    /// freshly (re)created `MainActivity` (e.g. reopened after being swiped
+    /// from Recents while the foreground service kept the process itself
+    /// alive, docs/design.md §4.6) can read the *real* current state instead
+    /// of the [ConnectionStatus.NotPaired] a bare `mutableStateOf` default
+    /// would otherwise show until the next event happened to arrive.
+    var connectionStatus: ConnectionStatus = ConnectionStatus.NotPaired
+        private set
+
     /// Set by whichever screen is currently visible, cleared when it stops.
     /// Read fresh on every event rather than captured at `pair()` time, so
     /// reassigning it (e.g. `MainActivity` recreated on rotation) re-routes
     /// future events without touching the underlying connection. Must work
     /// with this left `null` — that's the whole point of the QS tile and
-    /// notification triggers.
-    var uiListener: ((String) -> Unit)? = null
+    /// notification triggers. Raw [CoreEvent], not a formatted string: the
+    /// UI now has both a Debug screen (wants a log line) and a Devices
+    /// screen (wants structured connection status) reading the same stream,
+    /// so formatting is their job, not this dispatcher's.
+    var uiListener: ((CoreEvent) -> Unit)? = null
 
     /// Set by [PenguinSyncConnectionService] while it's alive, so it can
     /// keep its foreground notification current. Same "must work `null`"
@@ -129,11 +146,17 @@ class PenguinSyncApp : Application() {
         }
     }
 
+    /// Devices screen's read of "who have I paired with" (docs/design.md
+    /// §4.6, §9's four screens) — every persisted peer, connected or not.
+    /// A thin pass-through; `core` already does the file read.
+    fun pairedDevices(): List<PairedDevice> = core.listPairedDevices()
+
     private fun handleCoreEvent(event: CoreEvent) {
         // Writing is unrestricted from anywhere, foreground or not
         // (docs/design.md §3.1) — M1's write path, unchanged by M2.
         if (event is CoreEvent.ClipboardReceived) writeToClipboard(event.text)
-        uiListener?.invoke(describe(event))
+        connectionStatus = connectionStatus.reduce(event)
+        uiListener?.invoke(event)
         serviceListener?.invoke(event)
     }
 
@@ -154,7 +177,9 @@ class PenguinSyncApp : Application() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun describe(event: CoreEvent): String =
+    /// Shared by the Debug screen's event log — one formatting rule, read by
+    /// whichever screen is currently subscribed to [uiListener].
+    fun describe(event: CoreEvent): String =
         when (event) {
             is CoreEvent.PeerHandshake -> "✓ connected to ${event.name} (${event.deviceId.take(16)}…)"
             is CoreEvent.Ponged -> "  ping: ${event.rttMs} ms"

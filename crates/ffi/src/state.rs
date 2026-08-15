@@ -58,6 +58,17 @@ impl PersistedPeers {
             .iter()
             .filter_map(|p| penguinsync_protocol::message::from_hex(&p.device_id))
     }
+
+    /// `(device_id_hex, name)` for every persisted peer — the Devices
+    /// screen's read of "who have I paired with", independent of whether any
+    /// of them is connected right now (docs/design.md §4.6, four-screen
+    /// layout). Hex rather than the raw `DeviceId` bytes: this is headed
+    /// straight across the FFI boundary as plain data.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.peers
+            .iter()
+            .map(|p| (p.device_id.as_str(), p.name.as_str()))
+    }
 }
 
 #[cfg(test)]
