@@ -2,7 +2,7 @@
 
 Peer-to-peer sync between an Android phone and a GNOME/Wayland Linux desktop, over the local network. Clipboard, files, and notification mirroring. No cloud, no server anyone else runs.
 
-**Status: design complete, implementation not started.** See [`docs/design.md`](docs/design.md).
+**Status: M0–M2 implemented and verified on real hardware** — pairing, QUIC reconnect, and clipboard sync both directions (manual tier). File transfer and notification mirroring are still design-only. See [`docs/design.md`](docs/design.md).
 
 ---
 
