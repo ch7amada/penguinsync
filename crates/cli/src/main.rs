@@ -68,13 +68,35 @@ async fn run_tui() -> Result<(), dbus_client::ClientError> {
     tui::run(connection).await
 }
 
+/// Terminal width in columns, or `None` when stdout isn't a terminal (piped
+/// or redirected) — in which case there is nothing to wrap against and no
+/// reason to withhold the code.
+fn terminal_width() -> Option<u16> {
+    crossterm::terminal::size().ok().map(|(w, _)| w)
+}
+
 async fn run_pair() -> Result<(), dbus_client::ClientError> {
     let connection = dbus_client::connect().await?;
     let daemon = dbus_client::daemon_proxy(&connection).await?;
 
     let (qr_uri, fingerprint) = daemon.start_pairing().await?;
     match qr::render(&qr_uri) {
-        Ok(qr) => println!("{qr}"),
+        // A QR wider than the terminal is wrapped by the terminal itself,
+        // which shifts every line after the first and destroys the code —
+        // and it still *looks* like a QR, so the failure shows up as a phone
+        // that just never scans. Say so instead, and print the URI for the
+        // phone's manual-entry field.
+        Ok(qr) if terminal_width().is_some_and(|w| w < qr.width) => {
+            let width = terminal_width().unwrap_or(0);
+            println!(
+                "This terminal is {width} columns wide; the pairing QR needs {}. \
+                 A wrapped QR cannot be scanned, so it isn't shown.\n\
+                 Widen the window and run `penguinsync pair` again, or enter this \
+                 on the phone by hand:\n{qr_uri}",
+                qr.width,
+            );
+        }
+        Ok(qr) => println!("{}", qr.text),
         Err(e) => println!("(could not render QR: {e})\n{qr_uri}"),
     }
     println!("Fingerprint: {fingerprint}");

@@ -28,10 +28,28 @@
          CHANGE_WIFI_STATE — missing this throws a SecurityException at
          acquire() time, not at declare time. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Pair screen's QR scanner (docs/design.md §4.6, §9). Requested at
+         runtime, and the Pair screen still works without it — the manual
+         paste field is the fallback for a denied/absent camera, not a
+         dead end. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- required="false": a camera-less device (or one where the user
+         denies the permission) still gets a working app via the manual
+         paste fallback. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <!-- Settings screen's battery-optimization exemption request
+         (docs/design.md §4.6, §9's onboarding sequence) — a background QUIC
+         keepalive is exactly what battery optimization is designed to
+         throttle. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".PenguinSyncApp"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="PenguinSync"
         android:supportsRtl="true">
 

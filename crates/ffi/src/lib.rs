@@ -28,6 +28,8 @@ pub use penguinsync_net as net;
 mod core;
 mod state;
 
-pub use crate::core::{ConnectionHandle, CoreError, CoreEvent, CoreEventListener, PenguinSyncCore};
+pub use crate::core::{
+    ConnectionHandle, CoreError, CoreEvent, CoreEventListener, PairedDevice, PenguinSyncCore,
+};
 
 uniffi::setup_scaffolding!();

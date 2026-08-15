@@ -17,7 +17,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use tokio::sync::mpsc;
 
 use crate::dbus_client::{self, ClientError, DeviceInfo};
@@ -29,7 +29,11 @@ struct PendingConfirmation {
 }
 
 struct PairingDisplay {
-    qr: String,
+    qr: crate::qr::Rendered,
+    /// Kept alongside the rendered code so a terminal too small to show the
+    /// QR can still offer the URI for the phone's manual-entry field, rather
+    /// than dead-ending.
+    uri: String,
     fingerprint: String,
 }
 
@@ -133,7 +137,11 @@ async fn handle_key(app: &mut App, code: KeyCode, daemon: &dbus_client::Daemon1P
         KeyCode::Char('p') => match daemon.start_pairing().await {
             Ok((qr_uri, fingerprint)) => match crate::qr::render(&qr_uri) {
                 Ok(qr) => {
-                    app.pairing_display = Some(PairingDisplay { qr, fingerprint });
+                    app.pairing_display = Some(PairingDisplay {
+                        qr,
+                        uri: qr_uri,
+                        fingerprint,
+                    });
                     app.status =
                         "scan the QR on your phone, then confirm the fingerprint".to_string();
                 }
@@ -223,16 +231,80 @@ fn draw(f: &mut Frame, app: &App) {
             ),
         );
     } else if let Some(pairing) = &app.pairing_display {
-        draw_popup(
-            f,
-            area,
-            "Scan to pair",
-            &format!(
-                "{}\nFingerprint: {}\n\n[Esc] dismiss",
-                pairing.qr, pairing.fingerprint
-            ),
-        );
+        draw_pairing(f, area, pairing);
     }
+}
+
+/// Rows the pairing view needs under the code itself: fingerprint, a blank,
+/// and the dismiss hint.
+const PAIRING_FOOTER_ROWS: u16 = 3;
+
+/// The pairing QR, drawn over the whole frame rather than in a centred popup.
+///
+/// A popup sized as a fraction of the terminal is what broke this: a
+/// `Paragraph` truncates lines it cannot fit, and a truncated QR code is not
+/// a slightly-worse QR code — it is not a QR code. Cutting the right-hand
+/// columns takes the top-right finder pattern with them, and a decoder needs
+/// all three to locate the symbol at all. Diagnosed off a raw camera frame
+/// pulled from the phone: the code sat flush against this popup's right
+/// border with two finder patterns instead of three, and nothing could read
+/// it — not the app, not Google Lens, not the stock camera. Taking the full
+/// area buys the ~20 columns and ~10 rows that were missing.
+///
+/// If even the full frame is too small, the code is not drawn at all. A QR
+/// nobody can scan is worse than no QR: it sends you hunting for better
+/// light and a steadier hand instead of telling you to resize the window.
+fn draw_pairing(f: &mut Frame, area: Rect, pairing: &PairingDisplay) {
+    let needed_width = pairing.qr.width;
+    let needed_height = pairing.qr.height + PAIRING_FOOTER_ROWS;
+
+    f.render_widget(Clear, area);
+    if needed_width > area.width || needed_height > area.height {
+        f.render_widget(
+            Paragraph::new(format!(
+                "This terminal is {}x{}, too small to show the pairing QR \
+                 uncut (it needs {}x{}). A clipped QR cannot be scanned, so \
+                 it isn't drawn.\n\n\
+                 Resize the window and press 'p' again — or type this into \
+                 the phone's Pair screen by hand:\n\n\
+                 {}\n\n\
+                 Fingerprint: {}\n\n[Esc] dismiss",
+                area.width,
+                area.height,
+                needed_width,
+                needed_height,
+                pairing.uri,
+                pairing.fingerprint,
+            ))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+
+    // Centred horizontally, top-aligned: the quiet zone the renderer already
+    // includes is what separates the code from whatever is beside it.
+    let x = area.x + (area.width - needed_width) / 2;
+    let qr_area = Rect {
+        x,
+        y: area.y,
+        width: needed_width,
+        height: pairing.qr.height,
+    };
+    let footer_area = Rect {
+        x,
+        y: area.y + pairing.qr.height,
+        width: needed_width,
+        height: PAIRING_FOOTER_ROWS,
+    };
+    f.render_widget(Paragraph::new(pairing.qr.text.as_str()), qr_area);
+    f.render_widget(
+        Paragraph::new(format!(
+            "Fingerprint: {}\n\n[Esc] dismiss",
+            pairing.fingerprint
+        )),
+        footer_area,
+    );
 }
 
 fn draw_popup(f: &mut Frame, area: Rect, title: &str, body: &str) {
@@ -246,7 +318,9 @@ fn draw_popup(f: &mut Frame, area: Rect, title: &str, body: &str) {
     };
     f.render_widget(Clear, popup);
     f.render_widget(
-        Paragraph::new(body).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         popup,
     );
 }

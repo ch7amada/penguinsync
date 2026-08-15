@@ -42,7 +42,9 @@ class PenguinSyncTileService : TileService() {
                 )
             startActivityAndCollapse(pendingIntent)
         } else {
-            @Suppress("DEPRECATION")
+            // Below API 34 there is no PendingIntent overload to call instead —
+            // this branch only runs below the SDK level lint is warning about.
+            @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
             startActivityAndCollapse(intent)
         }
     }

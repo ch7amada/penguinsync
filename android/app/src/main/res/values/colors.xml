@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher icon background — deep ocean blue, the one splash of brand
+         color in an otherwise stock-Material app. -->
+    <color name="ic_launcher_background">#01579B</color>
+</resources>
