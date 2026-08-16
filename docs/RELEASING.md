@@ -3,6 +3,26 @@
 A release is two artifacts — a Linux tarball and an Android APK — published
 together under one tag, built by `.github/workflows/release.yml`.
 
+## Branch model
+
+Two long-lived branches, since v0.1.0:
+
+| Branch | What it is |
+|---|---|
+| `develop` | **Default.** Where all work lands. Feature branches merge here. |
+| `main` | Released code only. Every commit on it is a version someone can download. |
+
+Feature branches come off `develop` and go back into `develop`. `main` only
+moves when a release is being cut, and every merge into it is immediately
+tagged.
+
+The point is that `main` answers one question without qualification: *what is
+currently released?* Anyone landing on the repository sees `develop`, which is
+where the project actually is; anyone cloning `main` gets something that was
+built, signed and shipped.
+
+CI runs on every branch, so `develop` is checked the same way `main` is.
+
 ## One-time setup: the Android signing key
 
 Android identifies an app by its signing key, not by its package name. Every
@@ -51,6 +71,9 @@ publish that.
 
 ## Cutting a release
 
+Steps 1–3 happen on `develop`. Step 4 is the merge into `main`, and step 5 is
+the tag.
+
 1. **Bump the version in both places.** They are checked against each other
    and against the tag, and the build fails on a mismatch.
    - `Cargo.toml` → `[workspace.package] version`
@@ -83,18 +106,30 @@ publish that.
    signature. Uninstall first, which also wipes the phone's identity and
    pairings.
 
-4. **Tag and push.**
+4. **Merge `develop` into `main`.** Nothing else should be going into `main`,
+   so this is a fast, boring merge.
+
+   ```sh
+   git checkout develop && git push          # everything above is on develop
+   git checkout main && git pull --ff-only
+   git merge --no-ff develop -m "Release 0.1.0"
+   git push
+   ```
+
+5. **Tag `main` and push the tag.** Tag the merge commit, not `develop` — the
+   tag has to point at what was released.
 
    ```sh
    git tag -a v0.1.0 -m "PenguinSync 0.1.0"
    git push origin v0.1.0
+   git checkout develop                      # go straight back; don't work on main
    ```
 
    The workflow builds both artifacts, checks that the tag agrees with both
    version numbers, and publishes a GitHub release with the tarball, the APK
    and their `.sha256` files.
 
-5. **Install the published artifacts** on a machine that is not the one you
+6. **Install the published artifacts** on a machine that is not the one you
    built them on, following `README.md` exactly as a user would. Bad install
    instructions are the most common way a working release still fails.
 
