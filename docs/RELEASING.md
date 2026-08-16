@@ -23,6 +23,22 @@ built, signed and shipped.
 
 CI runs on every branch, so `develop` is checked the same way `main` is.
 
+### What is enforced
+
+`main` is protected on GitHub, so the model is not just a convention:
+
+| Rule | Why |
+|---|---|
+| Pull request required | No accidental direct push to released code. |
+| 0 approvals required | A solo maintainer cannot approve their own PR; requiring one would make `main` unmergeable. |
+| Status check `check` must pass | The Rust job in `rust.yml`. Deliberately the *only* required check — `linux`, `android` and `publish` live in `release.yml` and never run on a pull request, so requiring them would block every merge forever. |
+| Force pushes and deletions blocked | Released history cannot be rewritten or lost. |
+| Admins **not** enforced | So the owner can override in an emergency and is never locked out of their own repository. |
+
+Tags matching `v*` have their own ruleset: deletion and force-update are both
+blocked. A published tag means exactly one thing, permanently — see "If
+something is wrong after tagging" below.
+
 ## One-time setup: the Android signing key
 
 Android identifies an app by its signing key, not by its package name. Every
@@ -106,24 +122,43 @@ the tag.
    signature. Uninstall first, which also wipes the phone's identity and
    pairings.
 
-4. **Merge `develop` into `main`.** Nothing else should be going into `main`,
-   so this is a fast, boring merge.
+4. **Open a pull request from `develop` into `main` and merge it.** `main`
+   is protected, so this is the only way in.
 
    ```sh
-   git checkout develop && git push          # everything above is on develop
-   git checkout main && git pull --ff-only
-   git merge --no-ff develop -m "Release 0.1.0"
-   git push
+   git push                                  # everything above is on develop
+
+   gh pr create --base main --head develop \
+     --title "Release 0.1.0" \
+     --body "See CHANGELOG.md for what is in this release."
+
+   gh pr checks --watch                      # wait for `check` to go green
+   gh pr merge --merge                        # a merge commit, not squash
    ```
 
-5. **Tag `main` and push the tag.** Tag the merge commit, not `develop` — the
-   tag has to point at what was released.
+   **Merge, not squash or rebase.** The tag is going to point at this commit,
+   and a merge commit is the one that has both histories under it — squashing
+   would detach `main`'s history from `develop`'s and make every later release
+   PR replay the same changes.
+
+5. **Tag the merge commit on `main`.** Not `develop`: the tag has to point at
+   exactly what was released.
 
    ```sh
+   git checkout main && git pull --ff-only   # fetch the merge GitHub just made
    git tag -a v0.1.0 -m "PenguinSync 0.1.0"
    git push origin v0.1.0
    git checkout develop                      # go straight back; don't work on main
    ```
+
+   Sanity check before pushing the tag — these two must be the same commit:
+
+   ```sh
+   git rev-parse --short main develop
+   ```
+
+   If they differ, something landed on `develop` after the PR was opened, and
+   the tag would name a release that was never built. Merge again first.
 
    The workflow builds both artifacts, checks that the tag agrees with both
    version numbers, and publishes a GitHub release with the tarball, the APK
@@ -143,3 +178,25 @@ find out the Android toolchain still works without spending a tag on it.
 - The wire protocol carries its own version (`docs/protocol.md`); a bump there
   is a breaking change for anyone who does not update both sides, and needs to
   be called out at the top of the changelog entry.
+
+## If something is wrong after tagging
+
+Release a patch version. Fix it on `develop`, bump to `x.y.z+1`, add a
+changelog entry, and go through the same PR-and-tag sequence.
+
+Do not try to move the tag — the ruleset on `v*` blocks deletion and
+force-update, on purpose. A tag that has meant two different things is worse
+than a version with a known bug: anyone who already downloaded the first one
+has something nobody can identify afterwards, including you.
+
+The release *notes* are editable without touching the tag, if the problem is
+only in the description:
+
+```sh
+gh release edit v0.1.0 --notes-file release-notes.md
+```
+
+Assets can be replaced the same way (`gh release upload v0.1.0 --clobber …`),
+but think twice: a checksum someone recorded from the first upload no longer
+matches, which looks exactly like a compromised download. Prefer a patch
+release.
