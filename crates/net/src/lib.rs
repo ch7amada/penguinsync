@@ -35,6 +35,7 @@ pub mod listener;
 pub mod reconnect;
 pub mod session;
 pub mod tls;
+pub mod transfer;
 
 pub use clipboard::{ClipChanged, ClipboardBackend, ClipboardError};
 pub use endpoint::{Endpoint, EndpointError};
@@ -43,3 +44,4 @@ pub use listener::ListenerEvent;
 pub use reconnect::DialerEvent;
 pub use session::{CloseReason, Session, SessionEvent, SessionHandle};
 pub use tls::{PinningVerifier, TrustStore};
+pub use transfer::{FsSink, TransferError, TransferSink};

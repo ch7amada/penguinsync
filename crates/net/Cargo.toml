@@ -10,7 +10,7 @@ authors.workspace = true
 [dependencies]
 penguinsync-protocol = { workspace = true }
 
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "io-util", "fs"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

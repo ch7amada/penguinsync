@@ -15,11 +15,14 @@
 //! `awaitClose { handle.cancel() }`. Getting this wrong leaks tokio tasks inside
 //! a process Android is trying to kill (docs/design.md §4.2).
 //!
-//! # M0
+//! # Status
 //!
-//! `PenguinSyncCore::new` and `PenguinSyncCore::pair` are the whole surface —
-//! enough to pair, connect over QUIC, and exchange ping/pong from Kotlin.
-//! `stop`/`send_file`/clipboard arrive with their milestones.
+//! `new`, `pair`, `send_clipboard` and `list_paired_devices` landed with
+//! M0–M2. `send_file` (M4, docs/design.md §6.2) mirrors `send_clipboard`'s
+//! shape: fire-and-forget, `CoreError::NotConnected` if nothing's connected,
+//! outcome and progress arrive as `CoreEvent::Transfer*` events. `stop`
+//! still doesn't exist — there is no separate daemon process on Android, so
+//! nothing has needed it yet.
 
 #![forbid(unsafe_code)]
 

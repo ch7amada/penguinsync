@@ -33,6 +33,13 @@ enum Command {
     Pair,
     /// Revoke a paired device by its device id (or a unique hex prefix).
     Unpair { device_id: String },
+    /// Send one or more files to a paired, connected device
+    /// (docs/design.md §6.2). `device` matches a device id prefix or an
+    /// exact name.
+    Send {
+        device: String,
+        files: Vec<std::path::PathBuf>,
+    },
     /// Dump daemon state as seen over D-Bus — devices, connection status.
     /// The instrument of last resort when a phone won't reconnect
     /// (docs/design.md §8).
@@ -51,6 +58,7 @@ async fn main() -> std::process::ExitCode {
         None => run_tui().await,
         Some(Command::Pair) => run_pair().await,
         Some(Command::Unpair { device_id }) => run_unpair(&device_id).await,
+        Some(Command::Send { device, files }) => run_send(&device, &files).await,
         Some(Command::Debug) => run_debug().await,
     };
 
@@ -147,6 +155,61 @@ async fn run_unpair(device_id: &str) -> Result<(), dbus_client::ClientError> {
         }
         _ => println!("'{device_id}' matches more than one device; use a longer prefix."),
     }
+    Ok(())
+}
+
+/// Matches `device` against a device id prefix or an exact (case-insensitive)
+/// name — same lookup shape as [`run_unpair`], plus a name match since a
+/// hex prefix is nobody's idea of a friendly command line.
+async fn run_send(
+    device: &str,
+    files: &[std::path::PathBuf],
+) -> Result<(), dbus_client::ClientError> {
+    let connection = dbus_client::connect().await?;
+    let devices = dbus_client::list_devices(&connection).await?;
+
+    let matches: Vec<_> = devices
+        .iter()
+        .filter(|d| d.device_id.starts_with(device) || d.name.eq_ignore_ascii_case(device))
+        .collect();
+    let target = match matches.as_slice() {
+        [] => {
+            println!("No paired device matches '{device}'.");
+            return Ok(());
+        }
+        [d] => *d,
+        _ => {
+            println!("'{device}' matches more than one device; use a longer id prefix.");
+            return Ok(());
+        }
+    };
+    if !target.connected {
+        println!("{} is not currently connected.", target.name);
+        return Ok(());
+    }
+
+    let mut uris = Vec::with_capacity(files.len());
+    for file in files {
+        let canonical = match std::fs::canonicalize(file) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping {}: {e}", file.display());
+                continue;
+            }
+        };
+        match url::Url::from_file_path(&canonical) {
+            Ok(url) => uris.push(url.to_string()),
+            Err(()) => println!("skipping {}: not a plain file path", file.display()),
+        }
+    }
+    if uris.is_empty() {
+        println!("nothing to send.");
+        return Ok(());
+    }
+
+    let count = uris.len();
+    dbus_client::send_files(&connection, &target.device_id, uris).await?;
+    println!("Sending {count} file(s) to {}...", target.name);
     Ok(())
 }
 

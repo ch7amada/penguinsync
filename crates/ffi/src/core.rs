@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use penguinsync_net::reconnect::DialerEvent;
 use penguinsync_net::session::{CloseReason, SessionEvent, SessionHandle};
-use penguinsync_net::{Endpoint, Identity, TrustStore};
+use penguinsync_net::{Endpoint, FsSink, Identity, TransferSink, TrustStore};
 use penguinsync_protocol::clipboard::{Clip, MIME_TEXT_PLAIN};
 use penguinsync_protocol::pairing::decode_qr_uri;
 use penguinsync_protocol::{LocalIdentity, PROTOCOL_VERSION, message};
@@ -78,6 +78,47 @@ pub enum CoreEvent {
     ClipboardReceived {
         text: String,
     },
+    /// This device just started sending a file — fired from
+    /// [`PenguinSyncCore::send_file`]'s underlying
+    /// [`SessionHandle::send_file`] (docs/design.md §6.2).
+    TransferStarted {
+        transfer_id: u64,
+        name: String,
+        size: u64,
+    },
+    /// The peer announced a file it's about to send us. Auto-accepted, no
+    /// prompt — pairing is the trust decision (docs/design.md §6.2,
+    /// docs/protocol.md §6.4).
+    TransferOffered {
+        transfer_id: u64,
+        name: String,
+        size: u64,
+    },
+    /// Cumulative bytes moved so far, either direction — `TransferStarted`
+    /// vs. `TransferOffered` already told Kotlin which `transfer_id`s are
+    /// sends and which are receives.
+    TransferProgress {
+        transfer_id: u64,
+        bytes: u64,
+        total: u64,
+    },
+    /// This device finished receiving a file — success or failure. On
+    /// success `path` is where it landed under the app's downloads directory
+    /// (`FsSink`, docs/design.md §6.2); on failure the partial file was
+    /// discarded and `error` says why.
+    TransferReceived {
+        transfer_id: u64,
+        name: String,
+        path: Option<String>,
+        ok: bool,
+        error: Option<String>,
+    },
+    /// The peer's ack for a file this device sent.
+    TransferAcked {
+        transfer_id: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 /// Implemented in Kotlin, wrapped once per stream in a `callbackFlow`
@@ -104,6 +145,13 @@ pub struct PenguinSyncCore {
     /// outside any tokio context, and only ever holds this lock long enough
     /// to clone or replace the handle, never across an `.await`.
     active_session: Arc<std::sync::Mutex<Option<SessionHandle>>>,
+    /// Where files the peer sends us land. A pragmatic v1 destination — a
+    /// `downloads` subdirectory under the app-private `data_dir` — not the
+    /// public Downloads collection: proper `MediaStore`/Storage-Access-
+    /// Framework integration needs a real device to get right and is
+    /// deferred, the same way docs/design.md §10 flags other
+    /// device-only-verifiable items.
+    sink: Arc<dyn TransferSink>,
 }
 
 #[uniffi::export]
@@ -124,6 +172,7 @@ impl PenguinSyncCore {
             .enable_all()
             .build()
             .map_err(|e| CoreError::Network(e.to_string()))?;
+        let sink: Arc<dyn TransferSink> = Arc::new(FsSink::new(dir.join("downloads")));
         Ok(Arc::new(Self {
             runtime,
             identity,
@@ -131,6 +180,7 @@ impl PenguinSyncCore {
             trust,
             peers_path,
             active_session: Arc::new(std::sync::Mutex::new(None)),
+            sink,
         }))
     }
 
@@ -192,6 +242,7 @@ impl PenguinSyncCore {
             local,
             Duration::from_secs(20),
             Some(payload.token),
+            self.sink.clone(),
             tx,
         ));
         self.runtime.spawn(forward_events(
@@ -222,6 +273,34 @@ impl PenguinSyncCore {
         match handle {
             Some(handle) => {
                 handle.send_clipboard(clip);
+                Ok(())
+            }
+            None => Err(CoreError::NotConnected),
+        }
+    }
+
+    /// Sends a local file to whatever device is currently connected
+    /// (docs/design.md §6.2). `path` must already be a real filesystem path
+    /// — resolving a Kotlin-side `content://` share URI down to one is
+    /// Kotlin's job, matching how this project draws the Kotlin/Rust
+    /// boundary (docs/design.md §4.6's "Kotlin owns" list). Fire-and-forget,
+    /// like [`PenguinSyncCore::send_clipboard`]: the returned `JoinHandle` is
+    /// dropped, and progress/outcome arrive as `CoreEvent::Transfer*` events
+    /// instead. Errs rather than silently dropping when nothing is
+    /// connected, so the UI can tell the user the tap did nothing.
+    pub fn send_file(&self, path: String) -> Result<(), CoreError> {
+        let handle = self
+            .active_session
+            .lock()
+            .expect("active_session mutex poisoned")
+            .clone();
+        match handle {
+            Some(handle) => {
+                // Fire-and-forget: the `JoinHandle` is intentionally dropped,
+                // not bound to `_` — that's what triggers clippy's
+                // `let_underscore_future` (it can't tell an intentional
+                // fire-and-forget apart from an accidentally-unawaited one).
+                handle.send_file(PathBuf::from(path));
                 Ok(())
             }
             None => Err(CoreError::NotConnected),
@@ -320,6 +399,55 @@ fn to_core_event(event: DialerEvent) -> Option<CoreEvent> {
         }
         DialerEvent::Session(SessionEvent::Ponged { rtt }) => Some(CoreEvent::Ponged {
             rtt_ms: rtt.as_millis() as u64,
+        }),
+        DialerEvent::Session(SessionEvent::TransferStarted {
+            transfer_id,
+            name,
+            size,
+        }) => Some(CoreEvent::TransferStarted {
+            transfer_id,
+            name,
+            size,
+        }),
+        DialerEvent::Session(SessionEvent::TransferOffered {
+            transfer_id,
+            name,
+            size,
+        }) => Some(CoreEvent::TransferOffered {
+            transfer_id,
+            name,
+            size,
+        }),
+        DialerEvent::Session(SessionEvent::TransferProgress {
+            transfer_id,
+            bytes,
+            total,
+        }) => Some(CoreEvent::TransferProgress {
+            transfer_id,
+            bytes,
+            total,
+        }),
+        DialerEvent::Session(SessionEvent::TransferReceived {
+            transfer_id,
+            name,
+            path,
+            ok,
+            error,
+        }) => Some(CoreEvent::TransferReceived {
+            transfer_id,
+            name,
+            path: path.map(|p| p.to_string_lossy().into_owned()),
+            ok,
+            error,
+        }),
+        DialerEvent::Session(SessionEvent::TransferAcked {
+            transfer_id,
+            ok,
+            error,
+        }) => Some(CoreEvent::TransferAcked {
+            transfer_id,
+            ok,
+            error,
         }),
         DialerEvent::Session(SessionEvent::Closed(reason)) => Some(CoreEvent::Disconnected {
             reason: describe_close(reason),

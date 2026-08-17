@@ -9,6 +9,19 @@ notes — the release workflow reads it straight out of this file.
 
 ## [Unreleased]
 
+### Added
+
+- **File transfer.** Send a file (or several) from Nautilus's context menu on
+  Linux, or from Android's share sheet or in-app picker; it lands
+  auto-accepted in `$XDG_DOWNLOAD_DIR/PenguinSync/` (or the Android app's
+  downloads folder), BLAKE3-verified on arrival, never overwriting an
+  existing file of the same name. A large transfer runs on its own QUIC
+  stream, so it can never stall a clipboard update. Progress and completion
+  surface over D-Bus for the TUI to show. Protocol version bumped to 2.
+  Android's share target and FFI wiring are written and Kotlin-compiles, but
+  are **not yet verified on a real device** — Rust core, daemon, CLI/TUI and
+  the Nautilus extension are (`cargo test`, `clippy`, `py_compile`).
+
 ## [0.1.0] - 2026-08-15
 
 First release. **Clipboard sync works, in both directions, on GNOME/Wayland.**

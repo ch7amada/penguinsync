@@ -14,7 +14,7 @@ use std::time::Duration;
 use penguinsync::{CoreEvent, CoreEventListener, PenguinSyncCore};
 use penguinsync_net::identity::Identity;
 use penguinsync_net::tls::TrustStore;
-use penguinsync_net::{endpoint::Endpoint, listener};
+use penguinsync_net::{FsSink, TransferSink, endpoint::Endpoint, listener};
 use penguinsync_protocol::pairing::{QrPayload, encode_qr_uri};
 use penguinsync_protocol::{LocalIdentity, PROTOCOL_VERSION};
 
@@ -91,6 +91,10 @@ fn spawn_fake_linux_daemon() -> (
             ready_tx.send(addr).unwrap();
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            // This fake daemon never receives a file in these tests — the
+            // sink just needs to exist to satisfy `listener::run`'s
+            // signature (docs/protocol.md §6.4).
+            let sink: Arc<dyn TransferSink> = Arc::new(FsSink::new(tempdir("fake-daemon-sink")));
             tokio::spawn(listener::run(
                 endpoint,
                 LocalIdentity {
@@ -99,6 +103,7 @@ fn spawn_fake_linux_daemon() -> (
                     capabilities: vec![],
                 },
                 Duration::from_millis(500),
+                sink,
                 tx,
             ));
             // Pin whoever connects with a valid pairing window — the token

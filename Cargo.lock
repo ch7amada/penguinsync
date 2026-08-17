@@ -1482,6 +1482,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "zbus",
 ]
 
@@ -1503,6 +1504,7 @@ dependencies = [
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+ "url",
  "zbus",
 ]
 

@@ -22,6 +22,7 @@ use penguinsync_protocol::LocalIdentity;
 
 use crate::endpoint::Endpoint;
 use crate::session::{Session, SessionEvent, SessionHandle};
+use crate::transfer::TransferSink;
 
 pub enum ListenerEvent {
     /// A connection came up. `handle` is a cheap, cloneable capability
@@ -42,6 +43,7 @@ pub async fn run(
     endpoint: Arc<Endpoint>,
     local: LocalIdentity,
     keepalive_interval: Duration,
+    sink: Arc<dyn TransferSink>,
     events: mpsc::UnboundedSender<ListenerEvent>,
 ) {
     loop {
@@ -49,9 +51,12 @@ pub async fn run(
             return;
         };
         let local = local.clone();
+        let sink = sink.clone();
         let events = events.clone();
         tokio::spawn(async move {
-            if let Err(e) = accept_and_drain(incoming, local, keepalive_interval, events).await {
+            if let Err(e) =
+                accept_and_drain(incoming, local, keepalive_interval, sink, events).await
+            {
                 tracing::debug!(error = %e, "incoming connection did not complete");
             }
         });
@@ -70,12 +75,13 @@ async fn accept_and_drain(
     incoming: quinn::Incoming,
     local: LocalIdentity,
     keepalive_interval: Duration,
+    sink: Arc<dyn TransferSink>,
     events: mpsc::UnboundedSender<ListenerEvent>,
 ) -> Result<(), AcceptError> {
     let connecting = incoming.accept()?;
     let connection = connecting.await?;
     let remote = connection.remote_address();
-    let session = Session::accept(connection, local, keepalive_interval).await?;
+    let session = Session::accept(connection, local, keepalive_interval, sink).await?;
 
     if events
         .send(ListenerEvent::Connected {

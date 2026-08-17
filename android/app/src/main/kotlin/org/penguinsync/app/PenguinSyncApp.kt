@@ -183,6 +183,21 @@ class PenguinSyncApp : Application() {
     /// A thin pass-through; `core` already does the file read.
     fun pairedDevices(): List<PairedDevice> = core.listPairedDevices()
 
+    /// M4's send path (docs/design.md §6.2), from either send surface: the
+    /// share sheet or the in-app picker (both resolve their `content://`
+    /// URI(s) down to a real filesystem path first — that's Kotlin's job,
+    /// docs/design.md §4.6's "Kotlin owns" list; Rust/UniFFI needs a path,
+    /// not a URI). Fire-and-forget like [sendClipboardFromFocusedContext]:
+    /// outcome and progress arrive as `CoreEvent.Transfer*` events, not
+    /// through this call's return value.
+    fun sendFile(path: String): SendResult =
+        try {
+            core.sendFile(path)
+            SendResult.Sent
+        } catch (e: Exception) {
+            SendResult.Failed(e.message ?: e.toString())
+        }
+
     private fun handleCoreEvent(event: CoreEvent) {
         // Writing is unrestricted from anywhere, foreground or not
         // (docs/design.md §3.1) — M1's write path, unchanged by M2.
@@ -230,6 +245,30 @@ class PenguinSyncApp : Application() {
                 )
             is CoreEvent.ClipboardReceived ->
                 LogEntry.now("clipboard updated (${event.text.length} chars)", LogSeverity.INFO)
+            is CoreEvent.TransferStarted ->
+                LogEntry.now("sending ${event.name} (${event.size} bytes)", LogSeverity.INFO)
+            is CoreEvent.TransferOffered ->
+                LogEntry.now("receiving ${event.name} (${event.size} bytes)", LogSeverity.INFO)
+            is CoreEvent.TransferProgress ->
+                LogEntry.now(
+                    "transfer ${event.transferId}: ${event.bytes}/${event.total} bytes",
+                    LogSeverity.INFO,
+                )
+            is CoreEvent.TransferReceived ->
+                if (event.ok) {
+                    LogEntry.now(
+                        "received ${event.name}" + (event.path?.let { " → $it" } ?: ""),
+                        LogSeverity.GOOD,
+                    )
+                } else {
+                    LogEntry.now("failed to receive ${event.name}: ${event.error}", LogSeverity.BAD)
+                }
+            is CoreEvent.TransferAcked ->
+                if (event.ok) {
+                    LogEntry.now("transfer ${event.transferId} delivered", LogSeverity.GOOD)
+                } else {
+                    LogEntry.now("transfer ${event.transferId} failed: ${event.error}", LogSeverity.BAD)
+                }
         }
 
     companion object {

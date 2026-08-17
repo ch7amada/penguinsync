@@ -21,6 +21,7 @@ mod clipboard;
 mod config;
 mod dbus;
 mod net_addrs;
+mod notify;
 mod orchestrator;
 mod shared;
 mod state;
@@ -56,6 +57,31 @@ fn xdg_data_dir() -> std::path::PathBuf {
                 .join(".local/share")
         })
         .join("penguinsync")
+}
+
+/// The user's actual Downloads directory — not an XDG base directory at all,
+/// but the one `xdg-user-dirs` maintains in `~/.config/user-dirs.dirs`
+/// (docs/design.md §4.3: received files land in
+/// `$XDG_DOWNLOAD_DIR/PenguinSync/`). Falls back to `~/Downloads` if the
+/// env var isn't set and the user-dirs file is missing or unparseable —
+/// same "never refuse to start over this" posture as [`Config::load`].
+fn xdg_download_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME must be set"));
+    let user_dirs = home.join(".config/user-dirs.dirs");
+    if let Ok(text) = std::fs::read_to_string(&user_dirs) {
+        for line in text.lines() {
+            if let Some(value) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") {
+                let value = value
+                    .trim_matches('"')
+                    .replace("$HOME", &home.to_string_lossy());
+                return std::path::PathBuf::from(value);
+            }
+        }
+    }
+    home.join("Downloads")
 }
 
 fn init_tracing() {
@@ -123,6 +149,7 @@ async fn main() {
         remote_handles: Mutex::new(HashMap::new()),
         connected_devices: Mutex::new(HashMap::new()),
         clipboard: crate::shared::ClipboardState::default(),
+        transfers: Mutex::new(HashMap::new()),
     });
 
     let connection = match zbus::connection::Builder::session()
@@ -161,11 +188,17 @@ async fn main() {
                         name: device.name.clone(),
                         device_id: device.device_id.clone(),
                         connected: false,
+                        shared: shared.clone(),
                     },
                 )
                 .await;
         }
     }
+
+    let download_dir = xdg_download_dir().join("PenguinSync");
+    tracing::info!(dir = %download_dir.display(), "received files land here");
+    let transfer_sink: Arc<dyn penguinsync_net::TransferSink> =
+        Arc::new(penguinsync_net::FsSink::new(download_dir));
 
     let (listener_tx, listener_rx) = tokio::sync::mpsc::unbounded_channel();
     let local_identity = penguinsync_protocol::LocalIdentity {
@@ -177,6 +210,7 @@ async fn main() {
         endpoint,
         local_identity,
         std::time::Duration::from_secs(20),
+        transfer_sink,
         listener_tx,
     ));
 

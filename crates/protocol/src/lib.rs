@@ -17,11 +17,13 @@ pub mod clipboard;
 pub mod connection;
 pub mod message;
 pub mod pairing;
+pub mod transfer;
 
 pub use clipboard::{Clip, ClipError};
 pub use connection::{Action, ConnectionMachine, Event, LocalIdentity, RejectReason};
 pub use message::{Capability, DeviceId, Handshake, Message, Ping, Pong};
 pub use pairing::{PairingToken, QrPayload};
+pub use transfer::TransferMeta;
 
 /// Wire protocol version, advertised in the mDNS TXT record and re-checked
 /// during the handshake.
@@ -29,7 +31,7 @@ pub use pairing::{PairingToken, QrPayload};
 /// Mismatches are rejected outright — there are no compatibility guarantees
 /// before 1.0 (docs/design.md §5.4). Bump this in the same commit as any wire
 /// change, alongside `docs/protocol.md`.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Service type advertised over mDNS/DNS-SD.
 pub const SERVICE_TYPE: &str = "_penguinsync._udp";
@@ -41,7 +43,7 @@ mod tests {
     #[test]
     fn protocol_version_is_pre_release() {
         assert_eq!(
-            PROTOCOL_VERSION, 1,
+            PROTOCOL_VERSION, 2,
             "docs/protocol.md must be updated in the same commit"
         );
     }

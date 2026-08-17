@@ -19,12 +19,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.DevicesOther
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,6 +36,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,13 +66,14 @@ fun DevicesScreen(
     pairedDevices: List<PairedDevice>,
     onGoToPair: () -> Unit,
     onSendClipboard: () -> Unit,
+    onSendFile: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { StatusHero(status, onSendClipboard) }
+        item { StatusHero(status, onSendClipboard, onSendFile) }
 
         item {
             Row(
@@ -110,6 +114,7 @@ fun DevicesScreen(
 private fun StatusHero(
     status: ConnectionStatus,
     onSendClipboard: () -> Unit,
+    onSendFile: () -> Unit,
 ) {
     val statusColors = LocalStatusColors.current
     val scheme = MaterialTheme.colorScheme
@@ -203,6 +208,14 @@ private fun StatusHero(
                     Spacer(Modifier.width(8.dp))
                     Text("Send clipboard to Linux")
                 }
+                Spacer(Modifier.height(8.dp))
+                // M4's in-app picker, the second required send affordance
+                // alongside the share sheet (docs/design.md §4.6, §6.2).
+                OutlinedButton(onClick = onSendFile, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.AttachFile, contentDescription = null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Send file to Linux")
+                }
             }
         }
     }
@@ -246,6 +259,36 @@ private fun DeviceCard(
             },
         ) { Text(device.name) }
     }
+}
+
+/// M4's device-target picker (docs/design.md §6.2), shown by `MainActivity`
+/// only when a file's being sent and more than one device is connected.
+/// With today's `PenguinSyncCore` that never actually happens — there is
+/// exactly one active session at a time, so `MainActivity` sends directly
+/// the moment it finds one connected device — but the picker is real code
+/// exercised the day the core grows multi-device targeting, not a screen
+/// guessed at in advance.
+@Composable
+fun DeviceSendPickerDialog(
+    devices: List<PairedDevice>,
+    onPick: (PairedDevice) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send to which device?") },
+        text = {
+            Column {
+                devices.forEach { device ->
+                    TextButton(onClick = { onPick(device) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(device.name, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Start)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

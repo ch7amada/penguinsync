@@ -20,6 +20,7 @@ use penguinsync_protocol::{LocalIdentity, backoff};
 
 use crate::endpoint::Endpoint;
 use crate::session::{Session, SessionEvent, SessionHandle};
+use crate::transfer::TransferSink;
 
 pub enum DialerEvent {
     /// A connection came up. `handle` is a cheap, cloneable capability
@@ -40,13 +41,15 @@ pub enum DialerEvent {
 ///
 /// `pairing_token` is consumed on the first successful connection only —
 /// every reconnect after that presents no token, matching a device that's
-/// already paired (docs/protocol.md §6.1).
+/// already paired (docs/protocol.md §6.1). `sink` receives whatever files
+/// the peer sends us (docs/protocol.md §6.4).
 pub async fn run(
     endpoint: Arc<Endpoint>,
     addr: SocketAddr,
     local: LocalIdentity,
     keepalive_interval: Duration,
     mut pairing_token: Option<TokenBytes>,
+    sink: Arc<dyn TransferSink>,
     events: mpsc::UnboundedSender<DialerEvent>,
 ) {
     let mut attempt: u32 = 0;
@@ -57,6 +60,7 @@ pub async fn run(
             local.clone(),
             keepalive_interval,
             pairing_token.take(),
+            sink.clone(),
         )
         .await
         {
@@ -112,9 +116,10 @@ async fn connect_once(
     local: LocalIdentity,
     keepalive_interval: Duration,
     pairing_token: Option<TokenBytes>,
+    sink: Arc<dyn TransferSink>,
 ) -> Result<Session, ConnectOnceError> {
     let connecting = endpoint.connect(addr)?;
     let connection = connecting.await?;
-    let session = Session::open(connection, local, keepalive_interval, pairing_token).await?;
+    let session = Session::open(connection, local, keepalive_interval, pairing_token, sink).await?;
     Ok(session)
 }

@@ -24,9 +24,9 @@ sealed interface ConnectionStatus {
     ) : ConnectionStatus
 }
 
-/// One event folded onto the previous status. `ClipboardReceived` leaves
-/// status untouched — it's an event on top of a connection, not a
-/// connection-state change itself.
+/// One event folded onto the previous status. `ClipboardReceived` and the
+/// M4 transfer events leave status untouched — they're events on top of a
+/// connection, not a connection-state change themselves.
 fun ConnectionStatus.reduce(event: CoreEvent): ConnectionStatus =
     when (event) {
         is CoreEvent.PeerHandshake -> ConnectionStatus.Connected(event.name, event.deviceId, lastRttMs = null)
@@ -35,6 +35,11 @@ fun ConnectionStatus.reduce(event: CoreEvent): ConnectionStatus =
         is CoreEvent.Reconnecting -> ConnectionStatus.Reconnecting(event.attempt)
         is CoreEvent.Disconnected -> ConnectionStatus.Disconnected(event.reason)
         is CoreEvent.ClipboardReceived -> this
+        is CoreEvent.TransferStarted -> this
+        is CoreEvent.TransferOffered -> this
+        is CoreEvent.TransferProgress -> this
+        is CoreEvent.TransferReceived -> this
+        is CoreEvent.TransferAcked -> this
     }
 
 /// One line for the top app bar's subtitle. Shorter than

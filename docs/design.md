@@ -1,7 +1,7 @@
 # PenguinSync — Design Document
 
-**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier), and released as **v0.1.0**; see §9 for what's next, `CHANGELOG.md` for what shipped, and `docs/RELEASING.md` for how releases are cut.
-**Date:** 2026-08-14
+**Status:** design agreed. M0–M2 implemented and verified on real hardware (walking skeleton, clipboard sync both directions, manual tier), and released as **v0.1.0**. M4 (file transfer) is implemented — protocol, transport, daemon, CLI/TUI, and the Nautilus extension are verified (`cargo test`/`clippy`, `py_compile`); the Android side (share target, FFI) is written and Kotlin-compiles but is **not yet verified on a real device** — no phone was available this round. M3 (Shizuku tier) is deliberately deferred past M4. See §9 for what's next, `CHANGELOG.md` for what shipped, and `docs/RELEASING.md` for how releases are cut.
+**Date:** 2026-08-17
 **Author:** ch7amada
 **Supersedes:** `mynotes.md` (kept for provenance; where the two disagree, this document wins)
 
@@ -449,8 +449,8 @@ penguinsync/
 | **M0 — Walking skeleton** ✅ | Pair via QR, connect over QUIC, exchange `Ping`/`Pong`, survive a Wi-Fi drop and reconnect, visible in both TUI and Android UI. No clipboard, no files. | Pairing, QUIC across the FFI boundary, reconnect — the three riskiest unknowns, isolated from platform combat. **Done when you can pull the Wi-Fi, walk away, come back, and it reconnects untouched.** |
 | **M1 — Clipboard: Linux → Android** ✅ | GNOME Shell extension (read side), Android write path | The easy direction, which needs no Android permissions at all |
 | **M2 — Clipboard: Android → Linux, manual** ✅ | QS tile, notification action, in-app button; extension write side | Round-trip clipboard for everyone, no setup |
-| **M3 — Clipboard: Shizuku tier** | Shell-UID helper, automatic background read | The power-user experience |
-| **M4 — File transfer** | Transfer streams, BLAKE3, auto-accept, Nautilus extension, Android share target, TUI progress | The transport under real load; both send surfaces |
+| **M3 — Clipboard: Shizuku tier** | Shell-UID helper, automatic background read | The power-user experience. Deliberately implemented *after* M4 — see below |
+| **M4 — File transfer** ✅ | Transfer streams, BLAKE3, auto-accept, Nautilus extension, Android share target, TUI progress | The transport under real load; both send surfaces. Rust core, daemon, CLI/TUI and Nautilus verified; Android share target and FFI wiring written and Kotlin-compiles, **not yet device-tested** |
 | **M5 — Notification mirroring** | Listener, allow-list, icon cache, dismissal sync, action buttons, CDM association | |
 | **v0.2** | `ext-data-control` backend → Plasma, Sway, Hyprland, Niri, COSMIC | |
 

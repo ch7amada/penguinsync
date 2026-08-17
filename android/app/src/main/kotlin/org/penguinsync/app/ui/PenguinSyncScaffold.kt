@@ -73,6 +73,7 @@ fun PenguinSyncScaffold(
     onDynamicColorChange: (Boolean) -> Unit,
     onPair: (String) -> Unit,
     onSendClipboard: () -> Unit,
+    onSendFile: () -> Unit,
     onClearLog: () -> Unit,
 ) {
     val navController = rememberNavController()
@@ -163,6 +164,7 @@ fun PenguinSyncScaffold(
                         navController.navigate(AppTab.PAIR.route) { launchSingleTop = true }
                     },
                     onSendClipboard = onSendClipboard,
+                    onSendFile = onSendFile,
                 )
             }
             composable(AppTab.PAIR.route) {

@@ -6,7 +6,9 @@
 //! its `Connected` property, or walk a brand-new one through the
 //! confirm-by-human step and persist the pin — plus, since M1, surfacing
 //! each connection's send handle so the clipboard broadcaster
-//! (`crate::clipboard`) has someone to send to.
+//! (`crate::clipboard`) has someone to send to, and since M4, turning file
+//! transfer events into `Daemon1::transfer_progress`/`transfer_finished`
+//! signals and a desktop notification on arrival (`crate::notify`).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,7 +20,7 @@ use penguinsync_net::session::{CloseReason, SessionEvent};
 use penguinsync_protocol::message;
 
 use crate::dbus::{self, Daemon1, Device1};
-use crate::shared::Shared;
+use crate::shared::{Shared, TransferDirection, TransferRecord};
 
 pub async fn run(
     mut events: mpsc::UnboundedReceiver<ListenerEvent>,
@@ -74,6 +76,91 @@ async fn handle_session_event(
                 ),
             }
         }
+        SessionEvent::TransferStarted {
+            transfer_id,
+            name,
+            size,
+        } => {
+            shared.transfers.lock().await.insert(
+                transfer_id,
+                TransferRecord {
+                    name: name.clone(),
+                    direction: TransferDirection::Send,
+                },
+            );
+            signal_ctx(shared, connection, remote)
+                .emit_progress(transfer_id, &name, 0, size, TransferDirection::Send)
+                .await;
+        }
+        SessionEvent::TransferOffered {
+            transfer_id,
+            name,
+            size,
+        } => {
+            shared.transfers.lock().await.insert(
+                transfer_id,
+                TransferRecord {
+                    name: name.clone(),
+                    direction: TransferDirection::Receive,
+                },
+            );
+            signal_ctx(shared, connection, remote)
+                .emit_progress(transfer_id, &name, 0, size, TransferDirection::Receive)
+                .await;
+        }
+        SessionEvent::TransferProgress {
+            transfer_id,
+            bytes,
+            total,
+        } => {
+            let record = shared.transfers.lock().await.get(&transfer_id).cloned();
+            let Some(record) = record else {
+                // A progress tick for a transfer we never saw start/offered —
+                // shouldn't happen, but nothing useful to report either.
+                return;
+            };
+            signal_ctx(shared, connection, remote)
+                .emit_progress(transfer_id, &record.name, bytes, total, record.direction)
+                .await;
+        }
+        SessionEvent::TransferReceived {
+            transfer_id,
+            name,
+            path,
+            ok,
+            error,
+        } => {
+            shared.transfers.lock().await.remove(&transfer_id);
+            signal_ctx(shared, connection, remote)
+                .emit_finished(
+                    transfer_id,
+                    &name,
+                    ok,
+                    error.as_deref(),
+                    TransferDirection::Receive,
+                )
+                .await;
+            if ok && let Some(path) = path {
+                crate::notify::file_received(&name, &path).await;
+            }
+        }
+        SessionEvent::TransferAcked {
+            transfer_id,
+            ok,
+            error,
+        } => {
+            let record = shared.transfers.lock().await.remove(&transfer_id);
+            let name = record.map(|r| r.name).unwrap_or_default();
+            signal_ctx(shared, connection, remote)
+                .emit_finished(
+                    transfer_id,
+                    &name,
+                    ok,
+                    error.as_deref(),
+                    TransferDirection::Send,
+                )
+                .await;
+        }
         SessionEvent::Closed(reason) => {
             shared.remote_handles.lock().await.remove(&remote);
             let device_id = shared.remote_to_device.lock().await.remove(&remote);
@@ -83,6 +170,100 @@ async fn handle_session_event(
                 dbus::set_connected(connection.object_server(), &id, false).await;
             }
         }
+    }
+}
+
+fn signal_ctx<'a>(
+    shared: &'a Shared,
+    connection: &'a zbus::Connection,
+    remote: SocketAddr,
+) -> TransferSignalCtx<'a> {
+    TransferSignalCtx {
+        shared,
+        connection,
+        remote,
+    }
+}
+
+/// This connection's device id, hex-encoded, or `String::new()` if the
+/// handshake hasn't landed yet — shouldn't happen for a transfer event (they
+/// only ever fire once a session is `Ready`), but the D-Bus signal still
+/// needs *some* string rather than a panic.
+async fn device_hex(shared: &Shared, remote: SocketAddr) -> String {
+    shared
+        .remote_to_device
+        .lock()
+        .await
+        .get(&remote)
+        .map(message::to_hex)
+        .unwrap_or_default()
+}
+
+/// The three things every transfer-signal emitter needs just to find the
+/// right `Daemon1` object and label the signal with the right device —
+/// bundled so `emit_progress`/`emit_finished` don't each carry three
+/// separate parameters on top of the transfer's own fields.
+struct TransferSignalCtx<'a> {
+    shared: &'a Shared,
+    connection: &'a zbus::Connection,
+    remote: SocketAddr,
+}
+
+impl TransferSignalCtx<'_> {
+    async fn emit_progress(
+        &self,
+        transfer_id: u64,
+        name: &str,
+        bytes: u64,
+        total: u64,
+        direction: TransferDirection,
+    ) {
+        let Ok(iface) = self
+            .connection
+            .object_server()
+            .interface::<_, Daemon1>(dbus::ROOT_PATH)
+            .await
+        else {
+            return;
+        };
+        let _ = Daemon1::transfer_progress(
+            iface.signal_emitter(),
+            device_hex(self.shared, self.remote).await,
+            transfer_id,
+            name.to_string(),
+            bytes,
+            total,
+            direction.as_str().to_string(),
+        )
+        .await;
+    }
+
+    async fn emit_finished(
+        &self,
+        transfer_id: u64,
+        name: &str,
+        ok: bool,
+        error: Option<&str>,
+        direction: TransferDirection,
+    ) {
+        let Ok(iface) = self
+            .connection
+            .object_server()
+            .interface::<_, Daemon1>(dbus::ROOT_PATH)
+            .await
+        else {
+            return;
+        };
+        let _ = Daemon1::transfer_finished(
+            iface.signal_emitter(),
+            device_hex(self.shared, self.remote).await,
+            transfer_id,
+            name.to_string(),
+            ok,
+            error.unwrap_or_default().to_string(),
+            direction.as_str().to_string(),
+        )
+        .await;
     }
 }
 
@@ -191,10 +372,10 @@ async fn ensure_device_object(
                 name: name.to_string(),
                 device_id: message::to_hex(&device_id),
                 connected: false,
+                shared: shared.clone(),
             },
         )
         .await;
-    let _ = shared; // reserved: future milestones persist per-device settings here too
 }
 
 fn close_reason_label(reason: &CloseReason) -> &'static str {

@@ -1,6 +1,6 @@
 # PenguinSync Wire Protocol
 
-**Protocol version: 1 (M0 + M1 + M2 implemented: Handshake, Ping/Pong, Clipboard — both directions)**
+**Protocol version: 2 (M0 + M1 + M2 + M4 implemented: Handshake, Ping/Pong, Clipboard both directions, File transfer)**
 
 This document is **normative**. Every change to the wire format must edit this file in the same commit that changes the code, and must bump `PROTOCOL_VERSION` in `crates/protocol/src/lib.rs`.
 
@@ -91,7 +91,7 @@ Debuggability is recovered by logging **decoded** messages through `tracing`, no
 
 ## 6. Messages
 
-> Handshake, Ping/Pong and Clipboard are implemented (`crates/protocol/src/message.rs`); everything past that is still sketched and changes as milestones land — keep this section in step with `crates/protocol`.
+> Handshake, Ping/Pong, Clipboard and File transfer are implemented (`crates/protocol/src/message.rs`); Notification is still sketched and changes as milestones land — keep this section in step with `crates/protocol`.
 
 ### 6.1 Handshake (M0)
 
@@ -124,15 +124,29 @@ Content marked sensitive by the source platform (Android's `EXTRA_IS_SENSITIVE`)
 
 ### 6.4 File transfer (M4)
 
-Metadata on the control stream; payload on its own unidirectional stream.
+Metadata on the control stream (`Message::TransferOffer`); payload on its own unidirectional stream, opened separately and correlated by `transfer_id` — the two are independent QUIC streams with no ordering guarantee between them, so a receiver may see the stream before the metadata or vice versa (`crates/net/src/session.rs` holds a small per-connection map to match them up either way).
+
+**`TransferOffer`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `transfer_id` | `u64` | Correlates this announcement with its payload stream and with `TransferComplete` |
+| `name` | `String` | Receiver sanitises (`crates/protocol/src/transfer.rs::sanitize_name` — last path segment only, `.`/`..`/empty rejected); never overwrites, appends `(1)` on collision |
+| `size` | `u64` | |
+| `offset` | `u64` | Always 0 in v1. Reserved so resume is an addition, not a break |
+| `hash` | `[u8; 32]` | BLAKE3 of the full content, verified by the receiver on arrival |
+
+**Payload stream header** (unidirectional, opened by the sender after `TransferOffer`): `transfer_id: u64` then `offset: u64`, both little-endian, followed by the raw file bytes to EOF (the stream's FIN). No length prefix — `size` from the metadata and the stream's own EOF are enough.
+
+**`TransferComplete`** — the receiver's ack, sent back on the control stream once the payload stream closes and the hash is checked (or the stream failed).
 
 | Field | Type | Notes |
 |---|---|---|
 | `transfer_id` | `u64` | |
-| `name` | `String` | Receiver sanitises; never overwrites, appends `(1)` on collision |
-| `size` | `u64` | |
-| `offset` | `u64` | Always 0 in v1. Reserved so resume is an addition, not a break |
-| `hash` | `[u8; 32]` | BLAKE3, verified on arrival |
+| `ok` | `bool` | |
+| `error` | `Option<String>` | Set when `ok` is false — hash mismatch, stream error, or a rejected name |
+
+Targeted at one device, chosen by the sender — unlike Clipboard, there is no broadcast. Auto-accepted from any paired device, no prompt (pairing is the trust decision — docs/design.md §6.2); a failed integrity check discards the partial file rather than keeping it, and there is no resume in v1.
 
 ### 6.5 Notification (M5)
 

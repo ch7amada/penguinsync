@@ -13,14 +13,29 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use penguinsync_net::{
-    endpoint::Endpoint, identity::Identity, listener, reconnect, session::SessionEvent,
-    tls::TrustStore,
+    FsSink, TransferSink, endpoint::Endpoint, identity::Identity, listener, reconnect,
+    session::SessionEvent, tls::TrustStore,
 };
 use penguinsync_protocol::LocalIdentity;
 use penguinsync_protocol::clipboard::{Clip, MIME_TEXT_PLAIN};
 
 const KEEPALIVE: Duration = Duration::from_millis(500);
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A fresh `FsSink` rooted at a scratch directory nobody else uses, plus
+/// that directory — every test that receives a file needs one of these and
+/// the caller wants the path back to assert on afterwards.
+fn temp_sink(label: &str) -> (Arc<dyn TransferSink>, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "penguinsync-loopback-test-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    (Arc::new(FsSink::new(&dir)), dir)
+}
 
 fn local_identity(device_id: penguinsync_protocol::DeviceId, name: &str) -> LocalIdentity {
     LocalIdentity {
@@ -93,6 +108,7 @@ async fn spawn_listener(
     identity: &Identity,
     trust: Arc<TrustStore>,
     addr: SocketAddr,
+    sink: Arc<dyn TransferSink>,
 ) -> (
     SocketAddr,
     mpsc::UnboundedReceiver<listener::ListenerEvent>,
@@ -126,7 +142,7 @@ async fn spawn_listener(
     let handle = tokio::spawn({
         let endpoint = endpoint.clone();
         async move {
-            listener::run(endpoint, local, KEEPALIVE, tx).await;
+            listener::run(endpoint, local, KEEPALIVE, sink, tx).await;
         }
     });
     (bound, rx, endpoint, handle)
@@ -143,10 +159,12 @@ async fn pairs_connects_and_survives_a_dropped_connection() {
     linux_trust.open_pairing_window(std::time::Instant::now() + Duration::from_secs(60));
     let android_trust = Arc::new(TrustStore::new([linux_identity.device_id]));
 
+    let (linux_sink, _linux_download_dir) = temp_sink("pairing-linux");
     let (linux_addr, mut listener_rx, linux_endpoint, listener_handle) = spawn_listener(
         &linux_identity,
         linux_trust.clone(),
         "127.0.0.1:0".parse().unwrap(),
+        linux_sink,
     )
     .await;
 
@@ -154,12 +172,14 @@ async fn pairs_connects_and_survives_a_dropped_connection() {
         Arc::new(Endpoint::dialing(&android_identity, android_trust.clone()).unwrap());
     let (dialer_tx, mut dialer_rx) = mpsc::unbounded_channel();
     let android_local = local_identity(android_identity.device_id, "pixel");
+    let (android_sink, _android_download_dir) = temp_sink("pairing-android");
     tokio::spawn(reconnect::run(
         android_endpoint,
         linux_addr,
         android_local,
         KEEPALIVE,
         Some([0xABu8; 16]),
+        android_sink,
         dialer_tx,
     ));
 
@@ -201,8 +221,9 @@ async fn pairs_connects_and_survives_a_dropped_connection() {
 
     // --- Wi-Fi comes back: a fresh listener on the *same* address, already
     // trusting Android from the pin above — no new pairing needed.
+    let (relisten_sink, _relisten_download_dir) = temp_sink("pairing-relisten");
     let (relisten_addr, mut listener_rx2, _linux_endpoint2, _listener_handle2) =
-        spawn_listener(&linux_identity, linux_trust, linux_addr).await;
+        spawn_listener(&linux_identity, linux_trust, linux_addr, relisten_sink).await;
     assert_eq!(
         relisten_addr, linux_addr,
         "reconnect must target the same cached address"
@@ -229,18 +250,26 @@ async fn broadcasts_a_clipboard_update_over_the_control_stream() {
     let linux_trust = Arc::new(TrustStore::new([android_identity.device_id]));
     let android_trust = Arc::new(TrustStore::new([linux_identity.device_id]));
 
-    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) =
-        spawn_listener(&linux_identity, linux_trust, "127.0.0.1:0".parse().unwrap()).await;
+    let (linux_sink, _linux_download_dir) = temp_sink("clipboard-linux");
+    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) = spawn_listener(
+        &linux_identity,
+        linux_trust,
+        "127.0.0.1:0".parse().unwrap(),
+        linux_sink,
+    )
+    .await;
 
     let android_endpoint = Arc::new(Endpoint::dialing(&android_identity, android_trust).unwrap());
     let (dialer_tx, mut dialer_rx) = mpsc::unbounded_channel();
     let android_local = local_identity(android_identity.device_id, "pixel");
+    let (android_sink, _android_download_dir) = temp_sink("clipboard-android");
     tokio::spawn(reconnect::run(
         android_endpoint,
         linux_addr,
         android_local,
         KEEPALIVE,
         None,
+        android_sink,
         dialer_tx,
     ));
 
@@ -275,20 +304,28 @@ async fn unpinned_peer_with_no_pairing_window_never_completes_the_handshake() {
 
     // Linux has no pins and no open pairing window: a stranger on the LAN.
     let linux_trust = Arc::new(TrustStore::new([]));
-    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) =
-        spawn_listener(&linux_identity, linux_trust, "127.0.0.1:0".parse().unwrap()).await;
+    let (linux_sink, _linux_download_dir) = temp_sink("stranger-linux");
+    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) = spawn_listener(
+        &linux_identity,
+        linux_trust,
+        "127.0.0.1:0".parse().unwrap(),
+        linux_sink,
+    )
+    .await;
 
     // Android also never pinned Linux (no QR was ever scanned).
     let android_trust = Arc::new(TrustStore::new([]));
     let android_endpoint = Arc::new(Endpoint::dialing(&android_identity, android_trust).unwrap());
     let (dialer_tx, mut dialer_rx) = mpsc::unbounded_channel();
     let android_local = local_identity(android_identity.device_id, "stranger");
+    let (android_sink, _android_download_dir) = temp_sink("stranger-android");
     tokio::spawn(reconnect::run(
         android_endpoint,
         linux_addr,
         android_local,
         KEEPALIVE,
         None,
+        android_sink,
         dialer_tx,
     ));
 
@@ -314,4 +351,113 @@ async fn unpinned_peer_with_no_pairing_window_never_completes_the_handshake() {
             .is_err(),
         "listener must never see a completed session"
     );
+}
+
+#[tokio::test]
+async fn sends_a_file_and_the_receiver_verifies_and_acks_it() {
+    // Android -> Linux: the share-sheet direction (docs/design.md §6.2).
+    // Exercises the whole path — control-stream offer, a real unidirectional
+    // payload stream, BLAKE3 verification on arrival, collision-safe naming,
+    // and the ack back to the sender — over real loopback QUIC.
+    let linux_identity = Identity::generate().unwrap();
+    let android_identity = Identity::generate().unwrap();
+
+    let linux_trust = Arc::new(TrustStore::new([android_identity.device_id]));
+    let android_trust = Arc::new(TrustStore::new([linux_identity.device_id]));
+
+    let (linux_sink, linux_download_dir) = temp_sink("transfer-linux");
+    let (linux_addr, mut listener_rx, _linux_endpoint, _listener_handle) = spawn_listener(
+        &linux_identity,
+        linux_trust,
+        "127.0.0.1:0".parse().unwrap(),
+        linux_sink,
+    )
+    .await;
+
+    let android_endpoint = Arc::new(Endpoint::dialing(&android_identity, android_trust).unwrap());
+    let (dialer_tx, mut dialer_rx) = mpsc::unbounded_channel();
+    let android_local = local_identity(android_identity.device_id, "pixel");
+    let (android_sink, _android_download_dir) = temp_sink("transfer-android");
+    tokio::spawn(reconnect::run(
+        android_endpoint,
+        linux_addr,
+        android_local,
+        KEEPALIVE,
+        None,
+        android_sink,
+        dialer_tx,
+    ));
+
+    // Grab both sides' send handles *before* draining for the handshake —
+    // `Connected` fires exactly once per connection, same as on the
+    // listener side, and `wait_for_dialer_handshake` below discards every
+    // event that isn't a `PeerHandshake` as it drains past them, so an
+    // attempt to fetch `Connected` afterward would wait forever for an
+    // event that already came and went.
+    let listener_handle = loop {
+        if let listener::ListenerEvent::Connected { handle, .. } = next(&mut listener_rx).await {
+            break handle;
+        }
+    };
+    let dialer_handle = loop {
+        if let reconnect::DialerEvent::Connected(handle) = next(&mut dialer_rx).await {
+            break handle;
+        }
+    };
+    wait_for_listener_handshake(&mut listener_rx).await;
+    wait_for_dialer_handshake(&mut dialer_rx).await;
+
+    // A file the dialer (Android) sends to the listener (Linux) — deliberately
+    // in its own scratch directory, separate from `linux_download_dir` (the
+    // receiver's destination), so the test can't accidentally pass by
+    // reading the file back from where it started.
+    let source_dir = std::env::temp_dir().join(format!(
+        "penguinsync-loopback-test-transfer-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let source_path = source_dir.join("photo.jpg");
+    let content = vec![0x42u8; 300 * 1024]; // bigger than one 64 KiB chunk
+    std::fs::write(&source_path, &content).unwrap();
+
+    dialer_handle.send_file(source_path.clone());
+
+    // Listener side: sees the transfer announced, then completed.
+    let received_path = loop {
+        match next(&mut listener_rx).await {
+            listener::ListenerEvent::Session {
+                event: SessionEvent::TransferReceived { name, path, ok, .. },
+                ..
+            } => {
+                assert!(ok, "transfer should have verified cleanly");
+                assert_eq!(name, "photo.jpg");
+                break path.expect("successful receive always has a path");
+            }
+            _ => continue,
+        }
+    };
+    assert_eq!(std::fs::read(&received_path).unwrap(), content);
+    assert_eq!(
+        received_path,
+        linux_download_dir.join("photo.jpg"),
+        "first arrival of this name should not get a collision suffix"
+    );
+
+    // Sender side: the receiver's ack comes back over the control stream.
+    loop {
+        if let reconnect::DialerEvent::Session(SessionEvent::TransferAcked { ok, .. }) =
+            next(&mut dialer_rx).await
+        {
+            assert!(ok, "sender should see a successful ack");
+            break;
+        }
+    }
+
+    let _ = listener_handle; // kept alive for the duration of the test
+    std::fs::remove_dir_all(&linux_download_dir).ok();
+    std::fs::remove_dir_all(&source_dir).ok();
 }

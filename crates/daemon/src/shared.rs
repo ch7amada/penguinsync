@@ -18,6 +18,26 @@ use penguinsync_protocol::pairing::PairingToken;
 
 use crate::state::PersistedState;
 
+/// Which side initiated a given `transfer_id` — the daemon needs to
+/// remember this across a transfer's lifetime so `TransferProgress` events
+/// (which don't carry a direction of their own — docs/protocol.md §6.4) can
+/// be labelled correctly on the `TransferProgress`/`TransferFinished` D-Bus
+/// signals (`crate::dbus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferDirection {
+    Send,
+    Receive,
+}
+
+impl TransferDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TransferDirection::Send => "send",
+            TransferDirection::Receive => "receive",
+        }
+    }
+}
+
 /// Clipboard state shared between the watch-and-broadcast loop (Linux's own
 /// clipboard changing) and the orchestrator's handling of an incoming
 /// `Clipboard` message (Android's clipboard changing, M2) — both directions
@@ -65,11 +85,25 @@ pub struct Shared {
     pub remote_handles: Mutex<HashMap<SocketAddr, SessionHandle>>,
 
     /// Every currently connected, paired device's send handle, keyed by
-    /// device id. What the clipboard broadcaster (docs/design.md §6.1) and,
-    /// later, file transfer iterate to reach live connections.
+    /// device id. What the clipboard broadcaster (docs/design.md §6.1) and
+    /// `Device1::send_files` (docs/design.md §6.2) iterate to reach live
+    /// connections.
     pub connected_devices: Mutex<HashMap<DeviceId, SessionHandle>>,
 
     pub clipboard: ClipboardState,
+
+    /// Name and direction of every transfer currently in flight, keyed by
+    /// `transfer_id` — populated on `TransferStarted`/`TransferOffered`,
+    /// consulted by `TransferProgress` (which carries neither on the wire —
+    /// docs/protocol.md §6.4) and removed on the terminal event
+    /// (`TransferReceived`/`TransferAcked`), all in `crate::orchestrator`.
+    pub transfers: Mutex<HashMap<u64, TransferRecord>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransferRecord {
+    pub name: String,
+    pub direction: TransferDirection,
 }
 
 impl Shared {

@@ -15,6 +15,7 @@ use crate::PROTOCOL_VERSION;
 use crate::clipboard::Clip;
 use crate::message::{Capability, DeviceId, Handshake, Message, Ping, Pong};
 use crate::pairing::TokenBytes;
+use crate::transfer::TransferMeta;
 
 /// Identity this side presents in its own [`Handshake`].
 #[derive(Debug, Clone)]
@@ -37,6 +38,18 @@ pub enum Event {
     /// The caller (daemon/ffi) wants this clip sent to the peer. Ignored
     /// before the handshake completes — there's no one to send it to yet.
     SendClipboard(Clip),
+    /// The caller is about to open a unidirectional stream for this transfer
+    /// and wants the peer told what to expect first. Ignored before the
+    /// handshake completes, same as `SendClipboard`.
+    SendTransferOffer(TransferMeta),
+    /// The caller (receiving side) finished handling a transfer — success or
+    /// failure — and wants the sender told. Ignored before the handshake
+    /// completes.
+    SendTransferComplete {
+        transfer_id: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 /// Output of the machine. `net` executes these; none of them touch a socket
@@ -62,6 +75,18 @@ pub enum Action {
     /// doesn't need to do anything with identity here, unlike
     /// `PeerHandshake` (docs/design.md §6.1).
     PeerClipboard(Clip),
+    /// The peer announced an incoming file. `net` should register this
+    /// metadata so its unidirectional-stream accept loop can correlate it
+    /// with the matching stream, which may arrive before or after this
+    /// message (docs/protocol.md §6.4 — the two are independent streams).
+    PeerTransferOffer(TransferMeta),
+    /// The peer finished handling a transfer we sent — `net` should surface
+    /// this as the sender's completion event.
+    PeerTransferComplete {
+        transfer_id: u64,
+        ok: bool,
+        error: Option<String>,
+    },
     /// No `Pong` arrived within the keepalive timeout. `net` should treat the
     /// connection as dead and let the reconnect loop take over.
     KeepaliveTimedOut,
@@ -137,6 +162,28 @@ impl ConnectionMachine {
                     vec![]
                 }
             }
+            Event::SendTransferOffer(meta) => {
+                if self.phase == Phase::Ready {
+                    vec![Action::Send(Message::TransferOffer(meta))]
+                } else {
+                    vec![]
+                }
+            }
+            Event::SendTransferComplete {
+                transfer_id,
+                ok,
+                error,
+            } => {
+                if self.phase == Phase::Ready {
+                    vec![Action::Send(Message::TransferComplete {
+                        transfer_id,
+                        ok,
+                        error,
+                    })]
+                } else {
+                    vec![]
+                }
+            }
         }
     }
 
@@ -176,7 +223,22 @@ impl ConnectionMachine {
                 }
             }
             (Phase::Ready, Message::Clipboard(clip)) => vec![Action::PeerClipboard(clip)],
-            // A handshake once Ready, or a ping/pong/clipboard before Ready,
+            (Phase::Ready, Message::TransferOffer(meta)) => {
+                vec![Action::PeerTransferOffer(meta)]
+            }
+            (
+                Phase::Ready,
+                Message::TransferComplete {
+                    transfer_id,
+                    ok,
+                    error,
+                },
+            ) => vec![Action::PeerTransferComplete {
+                transfer_id,
+                ok,
+                error,
+            }],
+            // A handshake once Ready, or a ping/pong/clipboard/transfer before Ready,
             // is a protocol violation from a well-behaved peer. Ignore
             // rather than tear down the connection over a single stray
             // message.
@@ -402,6 +464,92 @@ mod tests {
         assert!(
             m.handle(Event::Received(Message::Clipboard(test_clip())), || 0)
                 .is_empty()
+        );
+    }
+
+    fn test_meta() -> TransferMeta {
+        TransferMeta {
+            transfer_id: 7,
+            name: "photo.jpg".into(),
+            size: 1024,
+            offset: 0,
+            hash: [1u8; 32],
+        }
+    }
+
+    #[test]
+    fn send_transfer_offer_before_ready_is_dropped() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        assert!(
+            m.handle(Event::SendTransferOffer(test_meta()), || 0)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn send_transfer_offer_once_ready_is_sent() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        m.handle(Event::Received(peer_handshake(2)), || 0);
+        let meta = test_meta();
+        assert_eq!(
+            m.handle(Event::SendTransferOffer(meta.clone()), || 0),
+            vec![Action::Send(Message::TransferOffer(meta))]
+        );
+    }
+
+    #[test]
+    fn received_transfer_offer_once_ready_is_surfaced() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        m.handle(Event::Received(peer_handshake(2)), || 0);
+        let meta = test_meta();
+        assert_eq!(
+            m.handle(Event::Received(Message::TransferOffer(meta.clone())), || 0),
+            vec![Action::PeerTransferOffer(meta)]
+        );
+    }
+
+    #[test]
+    fn received_transfer_offer_before_ready_is_ignored() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        assert!(
+            m.handle(Event::Received(Message::TransferOffer(test_meta())), || 0)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn transfer_complete_round_trips_once_ready() {
+        let mut m = ConnectionMachine::new(identity(1), Duration::from_secs(20), None);
+        m.handle(Event::Received(peer_handshake(2)), || 0);
+        assert_eq!(
+            m.handle(
+                Event::SendTransferComplete {
+                    transfer_id: 7,
+                    ok: true,
+                    error: None,
+                },
+                || 0
+            ),
+            vec![Action::Send(Message::TransferComplete {
+                transfer_id: 7,
+                ok: true,
+                error: None,
+            })]
+        );
+        assert_eq!(
+            m.handle(
+                Event::Received(Message::TransferComplete {
+                    transfer_id: 7,
+                    ok: false,
+                    error: Some("hash mismatch".into()),
+                }),
+                || 0
+            ),
+            vec![Action::PeerTransferComplete {
+                transfer_id: 7,
+                ok: false,
+                error: Some("hash mismatch".into()),
+            }]
         );
     }
 }

@@ -95,12 +95,30 @@ struct PairingDisplay {
     issued_at: Instant,
 }
 
+/// A file transfer in progress, either direction (docs/design.md §6.2, §9's
+/// "TUI progress" — the reason `crates/daemon`'s `Daemon1` interface carries
+/// these two signals at all).
+struct ActiveTransfer {
+    transfer_id: u64,
+    name: String,
+    bytes: u64,
+    total: u64,
+    /// `"send"` or `"receive"` — see `crates/daemon/src/dbus.rs`'s
+    /// `transfer_progress`/`transfer_finished` doc comments for why this is
+    /// a plain string rather than an enum: it crosses D-Bus as one.
+    direction: String,
+}
+
 struct App {
     devices: Vec<DeviceInfo>,
     selected: usize,
     status: Status,
     pairing_display: Option<PairingDisplay>,
     confirmation: Option<PendingConfirmation>,
+    /// Kept small and unsorted — deliberately not a `HashMap`, since the TUI
+    /// only ever has a handful of these live at once and always wants them
+    /// in arrival order, not id order.
+    transfers: Vec<ActiveTransfer>,
 }
 
 impl App {
@@ -111,6 +129,7 @@ impl App {
             status: Status::hint(),
             pairing_display: None,
             confirmation: None,
+            transfers: Vec::new(),
         }
     }
 
@@ -120,6 +139,48 @@ impl App {
 
     fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {
         self.status = Status::message(text.into(), kind);
+    }
+
+    fn update_transfer(
+        &mut self,
+        transfer_id: u64,
+        name: String,
+        bytes: u64,
+        total: u64,
+        direction: String,
+    ) {
+        match self
+            .transfers
+            .iter_mut()
+            .find(|t| t.transfer_id == transfer_id)
+        {
+            Some(t) => {
+                t.bytes = bytes;
+                t.total = total;
+            }
+            None => self.transfers.push(ActiveTransfer {
+                transfer_id,
+                name,
+                bytes,
+                total,
+                direction,
+            }),
+        }
+    }
+
+    /// Removes the finished transfer and leaves a status line behind it —
+    /// same "tell the user what just happened" role the pairing flow's
+    /// status messages already play.
+    fn finish_transfer(&mut self, transfer_id: u64, name: &str, ok: bool, direction: &str) {
+        self.transfers.retain(|t| t.transfer_id != transfer_id);
+        let verb = match (direction, ok) {
+            ("send", true) => "sent",
+            ("send", false) => "send failed",
+            (_, true) => "received",
+            (_, false) => "receive failed",
+        };
+        let kind = if ok { StatusKind::Ok } else { StatusKind::Err };
+        self.set_status(format!("{name}: {verb}"), kind);
     }
 }
 
@@ -152,6 +213,8 @@ fn remaining_secs(issued_at: Instant, now: Instant) -> u64 {
 pub async fn run(connection: zbus::Connection) -> Result<(), ClientError> {
     let daemon = dbus_client::daemon_proxy(&connection).await?;
     let mut pairing_requests = daemon.receive_pairing_requested().await?;
+    let mut transfer_progress = daemon.receive_transfer_progress().await?;
+    let mut transfer_finished = daemon.receive_transfer_finished().await?;
 
     let mut terminal =
         setup_terminal().map_err(|e| ClientError::Zbus(zbus::Error::InputOutput(e.into())))?;
@@ -209,6 +272,22 @@ pub async fn run(connection: zbus::Connection) -> Result<(), ClientError> {
                         fingerprint: args.fingerprint().clone(),
                         name: args.name().clone(),
                     });
+                }
+            }
+            Some(signal) = transfer_progress.next() => {
+                if let Ok(args) = signal.args() {
+                    app.update_transfer(
+                        *args.transfer_id(),
+                        args.name().clone(),
+                        *args.bytes(),
+                        *args.total(),
+                        args.direction().clone(),
+                    );
+                }
+            }
+            Some(signal) = transfer_finished.next() => {
+                if let Ok(args) = signal.args() {
+                    app.finish_transfer(*args.transfer_id(), args.name(), *args.ok(), args.direction());
                 }
             }
         }
@@ -297,24 +376,67 @@ async fn handle_key(app: &mut App, code: KeyCode, daemon: &dbus_client::Daemon1P
     true
 }
 
+/// How many transfer rows to show at once — a fixed cap rather than however
+/// many happen to be running, so a burst of multi-file sends can't push the
+/// device list off screen (docs/design.md §9's "room to grow into a
+/// dashboard... not before the protocol works" — this stays a strip, not a
+/// dashboard).
+const MAX_VISIBLE_TRANSFERS: usize = 3;
+
 fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    let transfer_rows = app.transfers.len().min(MAX_VISIBLE_TRANSFERS) as u16;
     let chunks = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(transfer_rows),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
     .split(area);
 
     draw_header(f, chunks[0], app);
-    draw_devices(f, chunks[1], app);
-    draw_footer(f, chunks[2], app);
+    if transfer_rows > 0 {
+        draw_transfers(f, chunks[1], app);
+    }
+    draw_devices(f, chunks[2], app);
+    draw_footer(f, chunks[3], app);
 
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(f, area, confirmation);
     } else if let Some(pairing) = &app.pairing_display {
         draw_pairing(f, area, pairing);
     }
+}
+
+/// One line per active transfer: direction arrow, name, percentage. Plain
+/// text rather than a progress-bar widget — at this height (one row per
+/// transfer) a bar would be a handful of block characters, not obviously
+/// clearer than a number.
+fn draw_transfers(f: &mut Frame, area: Rect, app: &App) {
+    let lines: Vec<Line> = app
+        .transfers
+        .iter()
+        .take(MAX_VISIBLE_TRANSFERS)
+        .map(|t| {
+            let pct = t
+                .bytes
+                .saturating_mul(100)
+                .checked_div(t.total)
+                .unwrap_or(0)
+                .min(100);
+            let arrow = if t.direction == "send" {
+                "\u{2191}"
+            } else {
+                "\u{2193}"
+            };
+            Line::from(vec![
+                Span::styled(format!(" {arrow} "), Style::default().fg(ACCENT)),
+                Span::raw(format!("{}  ", t.name)),
+                Span::styled(format!("{pct}%"), Style::default().fg(MUTED)),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// One row, not a three-row bordered box around a single word. The name is

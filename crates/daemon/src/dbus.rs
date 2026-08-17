@@ -21,6 +21,15 @@ use penguinsync_protocol::{PROTOCOL_VERSION, message};
 
 use crate::shared::Shared;
 
+/// `file://` URI → local path. `url` (already a `penguinsync-protocol`
+/// dependency, added here too) handles percent-decoding correctly —
+/// Nautilus's `Gio.File.get_uri()` percent-encodes spaces and other
+/// non-ASCII characters, and hand-rolled decoding is exactly the kind of
+/// thing that silently mishandles a filename with an `%` in it.
+fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    url::Url::parse(uri).ok()?.to_file_path().ok()
+}
+
 pub const BUS_NAME: &str = "org.penguinsync.Daemon1";
 pub const ROOT_PATH: &str = "/org/penguinsync/Daemon";
 
@@ -100,6 +109,35 @@ impl Daemon1 {
         fingerprint: String,
         name: String,
     ) -> zbus::Result<()>;
+
+    /// A file transfer is under way — either direction, `direction` is
+    /// `"send"` or `"receive"` (docs/design.md §6.2, §9's "TUI progress").
+    /// `bytes`/`total` are cumulative, so a client can just render a bar.
+    #[zbus(signal)]
+    pub async fn transfer_progress(
+        emitter: &SignalEmitter<'_>,
+        device_id: String,
+        transfer_id: u64,
+        name: String,
+        bytes: u64,
+        total: u64,
+        direction: String,
+    ) -> zbus::Result<()>;
+
+    /// A file transfer ended, successfully or not. `error` is empty when
+    /// `ok` is true — D-Bus signals don't carry `Option`, and every other
+    /// string field on this interface already uses "empty means absent"
+    /// rather than pull in a variant wrapper for one field.
+    #[zbus(signal)]
+    pub async fn transfer_finished(
+        emitter: &SignalEmitter<'_>,
+        device_id: String,
+        transfer_id: u64,
+        name: String,
+        ok: bool,
+        error: String,
+        direction: String,
+    ) -> zbus::Result<()>;
 }
 
 /// One `Device1` object per paired device, at [`device_path`].
@@ -107,6 +145,10 @@ pub struct Device1 {
     pub name: String,
     pub device_id: String,
     pub connected: bool,
+    /// Needed by [`Device1::send_files`] to reach this device's live
+    /// [`penguinsync_net::SessionHandle`] — the other three fields are
+    /// plain snapshots, this one is a way back into the running system.
+    pub shared: Arc<Shared>,
 }
 
 #[interface(name = "org.penguinsync.Device1")]
@@ -124,6 +166,35 @@ impl Device1 {
     #[zbus(property)]
     async fn connected(&self) -> bool {
         self.connected
+    }
+
+    /// Sends each of `uris` (`file://…`, as Nautilus's `get_uri()` or the
+    /// CLI's `send` verb produce them — docs/design.md §4.5, §6.2) to this
+    /// device. Auto-accepted on arrival, no prompt — pairing is the trust
+    /// decision (docs/protocol.md §6.4). Fire-and-forget per file: progress
+    /// and outcome arrive as `Daemon1::transfer_progress`/`transfer_finished`
+    /// signals, not as this call's return value, since a multi-file send
+    /// outlives the D-Bus method call by a wide margin.
+    async fn send_files(&self, uris: Vec<String>) -> fdo::Result<()> {
+        let id = message::from_hex(&self.device_id)
+            .ok_or_else(|| fdo::Error::InvalidArgs("malformed device id".into()))?;
+        let handle = self.shared.connected_devices.lock().await.get(&id).cloned();
+        let Some(handle) = handle else {
+            return Err(fdo::Error::Failed(
+                "device is not currently connected".into(),
+            ));
+        };
+        for uri in uris {
+            match uri_to_path(&uri) {
+                Some(path) => {
+                    handle.send_file(path);
+                }
+                None => {
+                    tracing::warn!(%uri, "SendFiles given an unusable file:// URI; skipping");
+                }
+            }
+        }
+        Ok(())
     }
 }
 

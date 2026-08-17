@@ -62,6 +62,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- M4's share target (docs/design.md §4.6, §6.2: "the share
+                 sheet is the only file-sending affordance Android users
+                 actually reach for; absent from it, the feature effectively
+                 does not exist"). Routed through MainActivity rather than a
+                 dedicated activity — it's already singleTop and exported,
+                 and resolving the shared URI(s) and picking a target device
+                 is a few lines on top of the screen this app already opens
+                 to, not a reason to multiply activities. `*/*` because file
+                 transfer has no MIME restriction (unlike clipboard's
+                 text/plain-only rule, docs/protocol.md §6.4); single- and
+                 multi-file selection both land here (docs/design.md §6.2). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <!-- Transparent trampoline for M2's manual clipboard-send path

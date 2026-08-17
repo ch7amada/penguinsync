@@ -91,6 +91,19 @@ pub enum Message {
     /// Broadcast to every connected paired device (docs/design.md §6.1) —
     /// files are targeted at one, but clipboard has no destination field.
     Clipboard(crate::clipboard::Clip),
+    /// Announces a file about to arrive on its own unidirectional stream
+    /// (docs/protocol.md §6.4). Targeted, not broadcast — file transfer has
+    /// exactly one destination device, chosen by the sender.
+    TransferOffer(crate::transfer::TransferMeta),
+    /// The receiver's ack for a completed (or failed) transfer, so the
+    /// sender's UI can show success or a reason (docs/design.md §6.2's
+    /// BLAKE3 integrity check happens on the receiving side; this is how the
+    /// sender finds out the result).
+    TransferComplete {
+        transfer_id: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -140,6 +153,30 @@ mod tests {
     fn round_trips_clipboard() {
         let clip = crate::clipboard::Clip::new("text/plain", b"hi".to_vec()).unwrap();
         let msg = Message::Clipboard(clip);
+        let bytes = encode(&msg).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), msg);
+    }
+
+    #[test]
+    fn round_trips_transfer_offer() {
+        let msg = Message::TransferOffer(crate::transfer::TransferMeta {
+            transfer_id: 42,
+            name: "photo.jpg".into(),
+            size: 1024,
+            offset: 0,
+            hash: [9u8; 32],
+        });
+        let bytes = encode(&msg).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), msg);
+    }
+
+    #[test]
+    fn round_trips_transfer_complete() {
+        let msg = Message::TransferComplete {
+            transfer_id: 42,
+            ok: false,
+            error: Some("hash mismatch".into()),
+        };
         let bytes = encode(&msg).unwrap();
         assert_eq!(decode(&bytes).unwrap(), msg);
     }
